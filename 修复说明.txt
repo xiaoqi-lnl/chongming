@@ -1,0 +1,29 @@
+重明（OrbRadiance）关闭隔离 / 天国余晖脸激光兼容性修复（源码版）
+
+一、根因（有代码依据，尚未实机验证）
+  * OrbRadiance.cs: OnFsmEnable() 即使 Settings.Enabled=false，也挂载多个组件。
+  * FanEyeBeam.cs: Update() 在 Off 时持续调用 Disarm()；Disarm()->ResetBursts() 原本扫描 Eye Beam Glow/Burst 1 下的全部原生激光，对 Antic/Fire 状态发送 FIRE、END。
+  * 天国余晖同样使用原生 Eye Beam，因此当重明 Off 时仍可能被中断。
+
+二、最小修改
+  * OrbRadiance.cs: FSM Hook 先调用 orig，然后在 Off 时立即退出，禁止挂载重明战斗组件；切换 Off 立即清空虚空秒杀闩锁并停止临时日志监听。
+  * FanEyeBeam.cs: 只记录和复位本组件真正使用过的原生 Beam，清理过程中不再扫描全部 Burst 1 光束。
+  * P1NailFan.cs: 禁止 Off 时通过独立路径给飞剑添加轨道驱动。
+  * VoidKill.cs: Off 状态时伤害 Hook 直接透传，避免旧闩锁在同帧继续改伤害。
+  * FsmWatch.cs: 提供 StopAll 以在 Off 时取消调试监听订阅。
+  * 没有调整用户设定的攻击时长、角度、速度、模式参数。
+
+三、验证情况
+  * 已通过 6 类静态断言：开关提前截断、Burst 1 所有权限制、原生激光登记、监听关闭、伤害透传和轨道挂载门控。
+  * 未编译和实机验证。本压缩包是源码副本，并非可安装 Mod。
+  * 你上传的源码包里未找到 WorkshopStatueLifecycle 的定义，而项目引用了它；要成功构建，需要在实际完整项目中补齐原有文件和 HK 依赖。
+
+四、如何应用（建议）
+  1. 备份 Windows 上当前能够成功编译的《重明》项目，以及游戏 Mods 目录中旧版重明。
+  2. 只把本包中下列 5 个文件覆盖到完整项目的对应位置：OrbRadiance.cs、FanEyeBeam.cs、P1NailFan.cs、VoidKill.cs、FsmWatch.cs。
+  3. 先完全退出游戏，再在本地正确配置依赖后执行 dotnet build -c Release。
+     注意：项目的 csproj 包含 CopyMod 构建后自动复制 DLL 到安装目录的步骤。
+  4. 先只测试「重明设置为 Off + 天国余晖设置为 On」；重复脸激光；检查新 ModLog 中应没有重明的 [watch] 和 [spikes] 战斗监听记录。
+  5. 再单独测试重明 On 的正常 P1/P2 脸激光、脸刺、飞剑和循环；最后测试战斗中 On→Off 的切换。
+
+备注：由于项目中缺少 WorkshopStatueLifecycle 源码，尚不能完整审计雕像初始化对 Off 的影响；此补丁重点修复所报告的战斗/脸激光冲突。谨慎声称整个 Mod 所有场景下已完全无副作用。
