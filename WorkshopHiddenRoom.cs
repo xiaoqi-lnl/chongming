@@ -164,13 +164,13 @@ namespace OrbRadiance
 
         private static void BuildRoom(GameObject root, Scene scene)
         {
-            // Concealed attack target sits just inside the existing wall; only Nail hits open the space.
+            // 隐藏门的受击区域位于原墙内侧，只有骨钉命中才能开启通道。
             GameObject door = new GameObject("Hidden nail seam"); door.layer = 19; door.transform.SetParent(root.transform, false); door.transform.position = new Vector3(originX + .18f + 1.2f, 37f, 0f);
             BoxCollider2D hit = door.AddComponent<BoxCollider2D>(); hit.isTrigger = true; hit.size = new Vector2(.8f, 3.8f);
             HiddenRoomDoor doorController = door.AddComponent<HiddenRoomDoor>();
             if (!doorController.Initialize(WorkshopRoomAssets.WallPrefab)) throw new InvalidOperationException("无法安全克隆并配置原生隐藏墙 FSM");
 
-            // Bridge and room surfaces; order 0 lets the black fill cover rear haze while z<0 foreground stones remain visible.
+            // 桥面与房间表面按 order=0 排序，使黑色底层遮住后方雾效，同时保留 z<0 的前景石块。
             MakeBlock(root, "Passage floor", new Vector2((originX + roomLeft) * .5f, 34.85f), new Vector2(roomLeft - originX, .3f), Color.black, true, true);
             GameObject passageCeiling = MakeBlock(root, "Passage ceiling", new Vector2((originX + roomLeft) * .5f, 39.15f), new Vector2(roomLeft - originX, .3f), Color.black, true, true);
             GameObject passageBack = MakeBlock(root, "Passage backdrop", new Vector2((originX + WorkshopArchFacade.WindowLeft) * .5f, 37f), new Vector2(WorkshopArchFacade.WindowLeft - originX, 4f), Color.black, false, true);
@@ -218,7 +218,7 @@ namespace OrbRadiance
             copy.transform.SetParent(root.transform, false);
             ambientParticlesCopy = copy;
 
-            // Instantiate below an inactive owner so the source ReduceParticleEffects scripts and PlayOnAwake systems never run.
+            // 在未激活的父节点下克隆，防止模板中的 ReduceParticleEffects 与 PlayOnAwake 提前运行。
             GameObject stagingClone = UnityEngine.Object.Instantiate(source, copy.transform, false);
             stagingClone.SetActive(false);
             foreach (MonoBehaviour script in stagingClone.GetComponentsInChildren<MonoBehaviour>(true))
@@ -373,7 +373,7 @@ namespace OrbRadiance
                 {
                     var mirrored = new GameObject("Decor left mirror " + leafName);
                     mirrored.transform.SetParent(leftPillarMirror.transform, false);
-                    // One parent-level negative X scale mirrors the native three-piece group's offsets and art.
+                    // 父节点使用一次 X 负缩放，镜像原版三段组的相对位置与贴图。
                     mirrored.transform.localPosition = new Vector3(world.x - 320.3504f,
                                                                     world.y - 37.989998f,
                                                                     world.z);
@@ -548,7 +548,7 @@ namespace OrbRadiance
 
         private static void BuildCopiedStatue(GameObject room, Scene scene)
         {
-            // Keep the whole copy under the hidden room's inactive staging child until the room opens.
+            // 隐藏房间开启前，复制的雕像一直放在未激活的准备节点下。
             statueContainer = new GameObject("Private Radiance statue staging");
             statueContainer.transform.SetParent(room.transform, false);
             statueContainer.SetActive(false);
@@ -593,7 +593,7 @@ namespace OrbRadiance
             displayRenderer.maskInteraction = sourceRenderer.maskInteraction;
             displayRenderer.enabled = sourceRenderer.enabled;
 
-            // The copied statue must remain fully visible without running native first-visit or proximity fades.
+            // 复制雕像应始终完整可见，不触发原版首次接近或距离淡出。
             SpriteFadeMaterial fadeMaterial = clone.GetComponentInChildren<SpriteFadeMaterial>(true);
             if (fadeMaterial != null) fadeMaterial.enabled = false;
             BossStatueFlashEffect flash = clone.GetComponentInChildren<BossStatueFlashEffect>(true);
@@ -642,7 +642,7 @@ namespace OrbRadiance
             BoxCollider2D box = area.AddComponent<BoxCollider2D>(); box.isTrigger = true; box.size = size;
             CameraLockArea lockArea = area.AddComponent<CameraLockArea>(); lockArea.maxPriority = true; lockArea.preventLookUp = true;
             lockArea.cameraXMin = xmin; lockArea.cameraXMax = xmax; lockArea.cameraYMin = ymin; lockArea.cameraYMax = ymax;
-            // CameraLockArea.Start must run before the opening hit can enable its trigger.
+            // 启用开门撞击区前，必须让 CameraLockArea.Start 先执行。
             area.SetActive(true);
             box.enabled = false;
         }

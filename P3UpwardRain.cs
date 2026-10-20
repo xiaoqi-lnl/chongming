@@ -5,9 +5,9 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // Normal P3 face-spike replacement: type-3 native row, launched upward from the live camera bottom.
-    // Individual Radiant Nail instances retain their prefab FSMs, DamageHero and collider; only their
-    // transform trajectory is driven here, without sending FAN events that start unrelated native paths.
+    // NORMAL P3 上行剑雨试验组件；当前在 OrbRadiance.cs 中未挂载。
+    
+    
     internal sealed class P3UpwardRain : MonoBehaviour
     {
         private const string StateStart = "Ascend Tele";
@@ -231,8 +231,8 @@ namespace OrbRadiance
                 }
                 if (nail == null) continue;
                 nail.SetActive(true);
-                // Keep the native projectile control/damage/collider setup intact. We do not
-                // send the native FAN events; the phase controller supplies only its upward drift.
+                // 保留原版弹体的 Control、伤害和碰撞体配置，不发送
+                // 原版 FAN 事件；阶段组件只负责驱动向上的轨迹。
                 if (nail.GetComponent<NailProjectile>() == null) nail.AddComponent<NailProjectile>();
                 nail.transform.rotation = Quaternion.Euler(0f, 0f, 180f);
                 shots.Add(new Shot { transform = nail.transform, speed = P3PhasePlan.UpwardRainSpeed });

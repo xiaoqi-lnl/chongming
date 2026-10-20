@@ -7,9 +7,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // NORMAL P2 platform spikes. Every cycle owns one inactive root and 36 private native spike trees.
-    // Hero Saver keeps its native 0.2s delay and sends SPIKES DOWN to its private nine-spike platform
-    // group. It never broadcasts into the vanilla P1/P2 pools or affects the other three cycle groups.
+    // NORMAL P2 每周期在 4 个平台生成 36 根私有原版地刺。
+    // Hero Saver 仅广播到平台自己的九刺组，不影响其他组或原版刺池。
+    
+    
     internal sealed class P2PlatformSpikes : MonoBehaviour
     {
         private const string StateStart = "Arena 2 Start";
@@ -60,7 +61,7 @@ namespace OrbRadiance
             if (control == null || control.Fsm == null) return;
 
             lastState = control.Fsm.ActiveStateName;
-            // OnEnable may run before Init; seed the parent state only after resolving it here.
+            // OnEnable 可能早于 Init；取得引用后才能设置父 FSM 的初始状态。
             lastArenaState = ArenaState();
             Subscribe();
             HandleState(lastState);
@@ -130,7 +131,7 @@ namespace OrbRadiance
                 return;
             }
 
-            // StateChanged handles transient phase entry/exit; polling is a fallback for scene reloads.
+            // StateChanged 处理短暂的阶段切换；轮询用于场景重新加载时兜底。
             string state = control.Fsm.ActiveStateName;
             if (state != lastState)
             {
@@ -139,7 +140,7 @@ namespace OrbRadiance
             }
             else if (state == StateStart && !running && !awaitingFreshP2Entry)
             {
-                // Total-mod toggle or component re-enable during P2: resume one private cycle cleanly.
+                // 在 P2 切换总开关或重新启用组件时，完整重启一次私有地刺周期。
                 HandleState(state);
             }
 
@@ -158,7 +159,7 @@ namespace OrbRadiance
             }
             if (P2PlatformSpikePlan.AdvanceCycle(ref cycleElapsed, Time.deltaTime, CycleSeconds))
             {
-                // Do not burst through missed periods after a hitch. The new cycle starts now.
+                // 帧卡顿后不补发错过的周期，而是从当前时刻开始新周期。
                 BuildCycle();
             }
         }
@@ -233,7 +234,7 @@ namespace OrbRadiance
             P2PlatformSpikePlan.SpikePlacement[] placements = P2PlatformSpikePlan.BuildPlacements(
                 chosen, spans, spikeHalfWidth, SpikesPerPlatform);
             GameObject root = new GameObject("NORMAL P2 platform spikes cycle");
-            cycleRoot = root; // Take ownership before configuring any clone; partial failure is cleaned below.
+            cycleRoot = root; // 配置克隆前先登记所有权，以便失败时统一清理部分创建的对象。
             root.transform.SetParent(spikeRoot, false);
             root.transform.localPosition = Vector3.zero;
             root.transform.localRotation = Quaternion.identity;
@@ -343,7 +344,7 @@ namespace OrbRadiance
 
         internal static bool ConfigurePrivateSpike(GameObject spike, GameObject platformGroup,
                                                    PlayMakerFSM sourceControl, float anticSeconds,
-                                                   List<PlayMakerFSM> destination)
+                                                   List<PlayMakerFSM> destination, int hazardType = 0)
         {
             PlayMakerFSM[] fsms = spike.GetComponentsInChildren<PlayMakerFSM>(true);
             foreach (PlayMakerFSM fsm in fsms)
@@ -358,9 +359,9 @@ namespace OrbRadiance
             int localized = LocalizeHeroSaver(heroSaver, platformGroup);
             if (localized == 0) return false;
 
-            // Floor Antic's native SetStateDowned action resolves this variable at runtime.
-            // Point each detached clone at its own child so an inherited source reference
-            // can never mutate the original spike tree (or log a missing-child warning).
+            // 原版 Floor Antic 的 SetStateDowned 会在运行时解析该变量。
+            // 每个分离的克隆都指向自己的子对象，防止继承的模板引用
+            // 误改原版地刺树，或触发子物体缺失警告。
             FsmGameObject floorAnticObject = privateControl.FsmVariables.GetFsmGameObject("Floor Antic");
             Transform floorAntic = spike.transform.Find("Floor Antic");
             if (floorAnticObject == null || floorAntic == null) return false;
@@ -369,7 +370,7 @@ namespace OrbRadiance
             DamageHero[] damage = spike.GetComponentsInChildren<DamageHero>(true);
             if (damage.Length == 0) return false;
             foreach (DamageHero component in damage)
-                component.hazardType = 0;
+                component.hazardType = hazardType;
 
             FsmState antic = privateControl.Fsm.GetState("Floor Antic");
             Wait wait = antic != null
@@ -379,8 +380,8 @@ namespace OrbRadiance
             if (wait == null) return false;
             if (anticSeconds >= 0f) wait.time.Value = anticSeconds;
 
-            // Native template can be left in Up with its collider enabled. Keep each fresh private copy
-            // hidden and down until its first rise pulse; later hits can restart the native rise this cycle.
+            // 原版模板可能停在 Up 且碰撞体已激活；新克隆必须先隐藏并收回，
+            // 首次升起前不可造成伤害；之后受击可重新进入原版升起流程。
             privateControl.SetState("Downed");
             foreach (Collider2D collider in spike.GetComponentsInChildren<Collider2D>(true))
                 if (collider != null) collider.enabled = false;

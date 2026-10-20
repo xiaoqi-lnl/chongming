@@ -5,30 +5,9 @@ using HutongGames.PlayMaker.Actions;
 
 namespace OrbRadiance
 {
-    // P2 横刺：在原有「从下往上」的波里**穿插反向（从上往下）的墙**（2026-10-05 用户定，照 ANY2 P1）。
-    //
-    // 原版 `Attack Choices/Nail L Sweep 2`（R 同理）：4 个 `SendEventByName` 发 "COMB L2"
-    //   （delay 0 / 2 / 3.5 / 5，**后两个 Enabled=false**）+ 一个 `Wait` 3.5s。
-    //   所以原版 P2 一次横刺只出 2 波（0s、2s），全是从下往上（见 P2CombPatch.cs）。
-    //
-    // 参照 ANY2（`参考代码/ANY2/decompiled/AnyRAD2.0（Any2.0辐光）.decompiled.cs:660-673`）：
-    //   ANY2 的 P1 横刺在一路波里 `InsertAction` 插了两条**反方向**的 comb（@1s、@2s）——
-    //   那套靠「往状态里加动作」，与 [[feedback-fsm-index-stability]]（不增删动作）冲突，不能照搬。
-    //   本 mod 用**现成但禁用的第 3、4 个 sender**（0-based 下标 2、3）顶替，纯原位改字段值，效果等价：
-    //     idx 2：`sendEvent` "COMB L2" → "COMB TOP2"、`delay` 3.5 → 1、`Enabled` false → true
-    //     idx 3：`sendEvent` "COMB L2" → "COMB TOP2"、`delay` 5   → 2、`Enabled` false → true
-    //   `COMB TOP2` → Attack Commands/Comb Top 2 → Type 6 → comb 的 `Top 2` 状态
-    //     （从上往下；x 居中 60.5、y=80、速度 ×1.8，见 P2CombPatch.cs）
-    //   于是 P2 一轮横刺 = **上@0、下@1、上@2、下@2**（4 波交错、Y 轴对穿）。
-    //
-    // 同帧/连续两个 `COMB TOP2` 不会打架：`COMB L2`/`COMB TOP2` 在 Attack Commands 里都是
-    //   **全局转移**（fsm_3634.md:3549-3551），`Comb L 2`/`Comb Top 2` 是 0 转移状态、进状态当帧
-    //   即 `OnEnter` 跑动作（FsmState.decompiled.cs:302）→ 每次发都各生成一把 comb、Type 正确；
-    //   Attack Choices 自己的全局转移只有 `ARENA 1/2 END`，不会被这两个事件带跑。
-    //
-    // 挂点：同 OrbSpawner.PatchBypass —— 在 `OrbRadiance.OnFsmEnable` 的 Attack Choices 分支里
-    //   调 `Patch`（Attack Choices 是常驻 FSM，OnEnable 会重入，所以记录 Original 保证幂等）。
-    //   总开关关掉走 `OrbRadiance.RestorePatched` → `Restore()`。
+    // P2 横刺将原版四波改为上、下、上、下交错，原位调整 FSM 发射事件与延迟。
+
+
     internal static class P2SweepWaves
     {
         private const string WallEvent = "COMB TOP2";   // 反向墙（Comb Top 2 → Type 6，从上往下）

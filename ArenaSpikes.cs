@@ -6,95 +6,11 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P1 地刺：Boss Control 的 Control FSM 一进 `Battle Start`（= 入场动画播完、开局那一帧）
-    // 就把五处地面地刺全部升起并常驻。
-    //
-    // 为什么是开局当帧起，而不是等场地移除同刻（2026-09-19 用户定）：
-    //   原版单根刺从收到 UP 到真正立起来要走完 `Down → Downed → Floor Antic` 2s → `Spike Up`，
-    //   而那段动画是**收在地板下面**做的（刺 world y 18.5，地板顶面 y=20，被地面贴图挡着看不见）。
-    //   等场地移除那一刻才起刺，玩家会先掉进虚空（`VoidKill` 直接 9999），来不及踩上刺。
-    //
-    // 首批升起和后续恢复**不同档**（2026-09-19 用户定：「开局地刺的生成和原版一致，
-    // 后续就和天国余晖一样」）：
-    //   · 首批升起 = **原版流程**，一个字不改：`Downed →(UP)→ Floor Antic` 2s 预备 → `Spike Up`。
-    //     所以 `Rise()` 里不碰任何一根刺的自己人状态，只 `SetState("Spike Waves")` 让 0.1s
-    //     刷条把 UP 发下去。
-    //   · 之后（被刺碰掉后的恢复）= 照天国余晖 P2 的节奏：`PatchAnticWait()` 把 24 根刺各自
-    //     `Floor Antic` 的 Wait 从 2s 压到 `SpikeAnticWait`(0.5s)，全程 ≈1s（原版 ≈2.5s）。
-    //     **压的时机是「首批 24 根全部进 `Up`」那一刻**（`PollSpikesUp` 里调），不是起刺那一帧
-    //     —— 同一段 `Wait` 首次升起和后续恢复共用，早压就等于把开局也改了。
-    //     （走过一条弯路：曾照天国余晖 `PlatformSpikes.cs:116` 直接 `SetState("Spike Up")` 让
-    //     首批秒起，用户不要这个，撤掉了。）
-    //
-    // 地板撤除不再只看 `FloorRemoveDelay`（2026-09-19 用户定「地板等刺立好再撤」）：
-    //   `ArenaFloor` 的条件 AND 上这里的 `GroundReady` —— 每帧数五处地面组下停在 `Up` 的刺
-    //   （`Up` 里才 SetPolygonCollider(true)，之前踩不到），数够 24 根才放地板走。
-    //   首批走原版 → 真正撤除时刻是 ≈2.3~2.7s（`FloorRemoveDelay` 的 1.5s 先到，
-    //   但闸门会等刺），超过 `SpikeUpTimeout` 还没齐也放行，免得地板永远卡住。
-    //   实际值看日志里那句「地板可以撤了（自起刺 x.xxs）」。
-    //
-    // 手法照 ANY2（AnyRAD2.0（Any2.0辐光）.decompiled.cs:730-757）：
-    //   把 Spike Control 的 4 个状态 —— Spikes Left / Spikes Right / Wave L / Wave R ——
-    //   里全部 SendEventByName 原位改成 "UP"，再把 Wave L / Wave R 的 WaitRandom 从 6~8s
-    //   压到 0.1s，最后 SetState("Spike Waves")。
-    //
-    // 为什么是这套（2026-09-19 用户定，从原来的 Spikes Outer 换过来）：
-    //   · Spike Waves →(SendRandomEvent)→ Wave L / Wave R →(各自自环)→ 回另一侧；
-    //     WaitRandom 压到 0.1s 后这个环变成「每 0.1 秒把五处全 UP 重播一遍」的常驻刷条。
-    //   · 原来停在 Spikes Outer（它只有一条 SPIKES DOWN → Respike Pause 转移），补发 UP 只在
-    //     收到 SPIKES DOWN 时发生一次；ANY2 这套是无条件每 0.1s 刷，任何把某处刺打下去的事件
-    //     都会在 0.1s 内被盖回来 —— 更抗干扰。
-    //   · Spikes Left / Spikes Right 本身一条转移都没有（收了事件什么都不做），一并改成全 UP，
-    //     是为了兜住 SPIKES LEFT / SPIKES RIGHT 这两条全局转移。
-    //   · Wave L / Wave R 里各有 2 个 SetFsmBool 会写 Beam Sweeper 的 Force Left / Force Right
-    //     （它俩确实被梁扫的 Control FSM 读去决定扫哪边）。ANY2 不动这两个，这里也不动
-    //     —— 代价是 P1 梁扫方向会被这个 0.1s 循环持续改写（2026-09-19 用户知情后选了照抄）。
-    //
-    // 别指望「刷得快」能让刺更快立起来：单根刺的 `UP` 只在 `Downed` 状态有效
-    // （…__Control__fsm_3403.md:88-92；`Floor Antic` / `Spike Up` / `Up` 都没有 UP 转移），
-    // 所以 0.1s 刷条只是「尽早把刺推回原版流程」，真正决定快慢的是 `Floor Antic` 那 2s
-    // —— 那一段靠 PatchAnticWait 压（见上），不是靠刷得快。
-    //
-    // 「整排一起收一起升」是原版机制，不是这里的 bug（2026-09-19 用户实测确认）：
-    //   英雄 HeroBox 碰到刺 → 那根刺的 `Hero Saver` 进场 → BroadcastAll 发 `SPIKES DOWN`
-    //   （…__Hero_Saver__fsm_3454.md:54-64）→ 24 根刺同时收 → 这里 0.1s 内补 UP，每根再走
-    //   `Down → Downed → Floor Antic(SpikeAnticWait) → Spike Up` 重新立起来。
-    //   ANY2 全文没有 saver / SPIKES DOWN，也没处理这个 —— 它的刺被英雄碰到一样整排收。
-    //   要消掉这条只能去掐 Hero Saver 的触发器（tag 式 Trigger2dEvent，collideTag="HeroBox"），
-    //   代价是站刺里持续掉血、不再被弹开，目前不做。
-    //
-    // 不做血线恢复（2026-09-19 用户定，照 ANY2）：P2 的 `SPIKE WAVES` 广播落到的正是被我们
-    // 改过的 Spike Waves / Wave L / Wave R，所以 P2 依然全场常驻；ANY2 是另外把三个相位阈值
-    // 抬高来推后 P3 的 `SPIKES OUTER`，我们不抬（那会把整场血量节奏改掉）。
-    //
-    // 无限剑雨阶段也保持常驻（2026-09-19 用户定，照天国余晖）：
-    //   刷条唯一会被打断的地方 = `Absolute Radiance/Phase Control` 的 `Set Phase 3` 状态里那发
-    //   `SPIKES OUTER`（BroadcastAll）→ Spike Control 全局转移 `SPIKES OUTER → Spikes Outer`，
-    //   master 被拽出 0.1s 刷条，此后整段无限剑雨都是原版「Far L/Far R 上、其余下」的固定图案。
-    //   天国余晖的处理 = `RemoveAction(fsm, "Set Phase 3", 0)` 把这发送信删掉（RadianceBoss.cs:616），
-    //   同状态第 2 个动作 `SetFsmBool(Rage Ready)` 保留 → 无限剑雨照常触发（RAGE START 那条链没动）。
-    //   这里做同一件事，但**不删动作元素**：只把那一个 SendEventByName 的 `Enabled` 设成 false。
-    //   PlayMaker 的 `FsmState.ActivateActions` 会跳过 Enabled=false 的动作
-    //   （`参考代码/playmaker_src/HutongGames.PlayMaker.FsmState.decompiled.cs:292`）。
-    //   删元素会挪动 `Set Phase 3` 里后续动作的下标，而 ManyRadiances 只有 DLL 没有源码、无法确认
-    //   它是否按下标读这个 FSM —— 按本 mod 一贯约束（原位改、不增删）关 Enabled，效果等价、下标不动。
-    //
-    // Boss 倒地阶段也保持常驻（2026-09-19 用户定）：
-    //   倒地那一段有两处 BroadcastAll 发 `SPIKES NONE`（→ Spike Control 全局转移 `SPIKES NONE → None`，
-    //   `None` 会给五处地面组全发 `DOWN`）：
-    //     · `Absolute Radiance/Control` 的 `Stun1 Start`（倒地动画本体：BigShake / Halo DOWN /
-    //       NAIL END / SPIKES NONE / ActivateGameObject）
-    //     · `Absolute Radiance/Phase Control` 的 `Stun 1`（相位记账那一步）
-    //   两处都掐掉（同 `Set Phase 3` 那发一样只关 `Enabled`）。倒地本身不受影响 —— 其余动作
-    //   以及紧随其后的 `STUN 1` 事件链都没动，只是刺不再被收走。
-    //
-    // 只原位改字段、不增删动作（同 OrbRadiance.cs 的约束），改前的值记在
-    // OriginalSendEvent / OriginalWaitRandom / OriginalSendEnabled 里供关开关时写回。
-    //
-    // 下沉：起刺时把五处地面组整体下移 2.68（刺 world y 21.18 → 18.5，2026-09-19 用户定）。
-    // 动的是五个组容器（Centre / Mid L / Mid R / Far L / Far R）的 transform —— 它们都在
-    // world (0,0,0)，24 根刺是它们的子物体、local y 就等于世界 y，父物体一动子物体全跟着。
-    // 不碰任何 FSM 字段，所以「起刺/收刺」的原版逻辑完全不变；关开关时写回原值。
+    // HARD P1 的 24 根地刺：首次升起沿用原版 2s 预警；全部进入 Up 后才允许撤地板。
+    // 后续重生将 Floor Antic 缩短至 0.5s，Spike Control 持续发送 UP；不改动原版 FSM 动作索引。
+    // 无限剑雨和倒地阶段禁用会收回地刺的指定广播；退出时恢复改动。
+
+
     internal class ArenaSpikes : MonoBehaviour
     {
         private const string SpikePath = "Boss Control/Spike Control";

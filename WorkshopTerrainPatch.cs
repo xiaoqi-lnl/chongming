@@ -71,7 +71,7 @@ namespace OrbRadiance
                 if (Mathf.Abs(bounds.min.x - wallX) > 0.2f) throw new InvalidOperationException("wall bounds did not match confirmed origin");
                 wallWasEnabled = wall.enabled;
                 wallCaptured = true;
-                // Keep the original component intact; private upper/lower box colliders leave a four-unit opening.
+                // 保留原版墙体组件；使用独立的上下 BoxCollider 形成四单位高的入口。
                 if (wallWasEnabled) { wall.enabled = false; wallModified = true; }
                 AddBox(scene, "Wind Hidden Room wall upper", new Vector2(bounds.center.x, (opening.yMax + bounds.max.y) * .5f), new Vector2(bounds.size.x, Mathf.Max(.01f, bounds.max.y - opening.yMax)), wallWasEnabled);
                 AddBox(scene, "Wind Hidden Room wall lower", new Vector2(bounds.center.x, (bounds.min.y + opening.yMin) * .5f), new Vector2(bounds.size.x, Mathf.Max(.01f, opening.yMin - bounds.min.y)), wallWasEnabled);

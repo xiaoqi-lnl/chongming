@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // Three native Ascend Beam columns paired with the N/H P1 orbit ring.
+    // N/H P1 剑环配套的三道原版 Ascend Beam 竖向激光。
     internal sealed class P1FaceOrbitColumns : MonoBehaviour
     {
         private const float WarningTime = 0.5f;
@@ -128,7 +128,7 @@ namespace OrbRadiance
             }
 
             float remaining = TotalTime - (Time.time - attackStartedAt);
-            // Keep the native Attack Choices held through the requested 2.15s window.
+            // 保持原版 Attack Choices 的控制窗口达到所需的 2.15s。
             if (remaining > 0f) yield return new WaitForSeconds(remaining);
             if (ticket == generation) Finish(ticket);
         }
@@ -222,7 +222,7 @@ namespace OrbRadiance
         private void OnDestroy() => StopAttack();
     }
 
-    // Keeps the native projectile's damage/collider/FSM and moves only its transform.
+    // 保留原版弹体的伤害、碰撞体和 FSM，仅驱动 transform。
     internal sealed class P1NailOrbit : MonoBehaviour
     {
         private const float Radius = 5f;
@@ -267,7 +267,7 @@ namespace OrbRadiance
             position.x = center.x + Mathf.Cos(radians) * Radius;
             position.y = center.y + Mathf.Sin(radians) * Radius;
             transform.position = position;
-            // Radiant Nail tip points along local +Y; orient that tip radially outward.
+            // Radiant Nail 的尖端指向局部 +Y，旋转时让尖端朝圆环外侧。
             transform.eulerAngles = new Vector3(0f, 0f, angle - 90f);
         }
 

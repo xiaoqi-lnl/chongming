@@ -95,8 +95,9 @@ namespace OrbRadiance
             {
                 orig(self, bossStatue, bossNameSheet, bossNameKey, descriptionSheet, descriptionKey);
                 if (OrbRadiance.Settings.Enabled && IsHidden(bossStatue) && self.bossNameText != null)
-                    self.bossNameText.text = "什么any一长串的hard重明";
+                    self.bossNameText.text = "any天国hard重明3.0";
                 if (OrbRadiance.Settings.Enabled && IsHidden(bossStatue) && self.descriptionText != null)
+                
                     self.descriptionText.text = "绝对的蛾出，由此而生的无解，教会你出招的是：";
                 return;
             }
@@ -119,8 +120,8 @@ namespace OrbRadiance
             GameObject unlock = self.tier3UnlockEffect;
             MenuSelectable firstSelected = self.firstSelected;
             object lastSelected = LastSelectedButtonField?.GetValue(null);
-            // StartCoroutine runs SetFirstSelected synchronously up to its first yield. Pin its
-            // captured target to tier one for this setup only; restore the shared native index at once.
+            // StartCoroutine 会同步执行 SetFirstSelected，直到首次 yield；
+            // 此次 Setup 暂将目标固定为第一档，之后立即恢复共享选择索引。
             if (LastSelectedButtonField != null) LastSelectedButtonField.SetValue(null, 0);
             if (self.tier1Button.button != null) self.firstSelected = self.tier1Button.button;
             if (self.tier3Button.button != null) self.tier3Button.button.interactable = false;
@@ -230,8 +231,8 @@ namespace OrbRadiance
 
         private static void OnUiCancelled(BossChallengeUI self, ChallengeUiState state)
         {
-            // LoadBoss clears OnCancel before its Hide call. A remaining callback means the user
-            // cancelled or the native load failed before it started; only that pending choice ends here.
+            // LoadBoss 会在 Hide 前清空 OnCancel；若回调仍在执行，说明玩家取消，
+            // 或原版载入尚未开始就失败，此时只结束待启动的选择。
             if (pendingTargetScene == null)
             {
                 UiStates.Remove(self);
@@ -268,7 +269,7 @@ namespace OrbRadiance
                 foreach (var entry in trigger.triggers)
                 {
                     if (entry?.callback == null) continue;
-                    // Cancel has its own Hide callback and must remain usable on the mode page.
+                    // Cancel 有独立的 Hide 回调，模式页必须保留它。
                     if (entry.eventID != EventTriggerType.Submit && entry.eventID != EventTriggerType.PointerClick) continue;
                     SuppressHideListeners(self, state, entry.callback);
                 }

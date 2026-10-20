@@ -8,37 +8,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // 梁扫（光墙）改成「不管哪个方向，都从 x=61 起、同时向两边走」（2026-10-01 用户定）。
-    // ★ 这是**普通难度**的 P2 光墙实现（2026-10-07 用户定）。hard 难度的光墙另行重做，
-    //   分流点在 `OrbRadiance.OnFsmEnable` 的 `Beam Sweeper` 分支；重做前 hard 暂时沿用本实现。
-    //   注意：本组件改的是 Beam Sweeper 的**全部四套** sweep 状态（L / R / L 2 / R 2），
-    //   即 P1 与 P2 的光墙都走这套双墙逻辑。
-    //
-    // 原版：`Boss Control/Beam Sweeper` 上是**一个**会移动的发射器（FSM `Control`，PathId 3311）。
-    // 每个 sweep 状态做三件事：SetPosition 把自己摆到起点、SpawnObjectFromGlobalPoolOverTime
-    // 每 0.075s 吐一颗 `Radiant Beam R`、iTweenMoveBy 把自己平移走 —— 拖出一条光墙。四套走法
-    // （…__Control__fsm_3311.md）：
-    //   Beam Sweep L   : SetPosition x=79,   iTween(-39,0,0)/4s
-    //   Beam Sweep R   : SetPosition x=43,   iTween(+39,0,0)/4s
-    //   Beam Sweep L 2 : SetPosition x=89,   iTween(-50,0,0)/5s（hard）
-    //   Beam Sweep R 2 : SetPosition x=32.6, iTween(+50,0,0)/5s（hard）
-    // 方向由 `Attack Choices` 广播的事件（BEAM SWEEP L/R/L2/R2，BroadcastAll）选；各 sweep 状态
-    // 开头的 `BoolTest Force Left/Force Right` 还会按 force 再翻一次 —— 而 P1 那套 0.1s 地刺刷条
-    // （ArenaSpikes）每 0.1s 都在写这两个 bool。
-    //
-    // 一个发射器只能往一个方向走 → 「同时向两边」必须**两个发射器**：克隆一份。
-    // 手法照 aura辐光 / ANY1不对称 的 `BeamSweeperClone`（它们也是克隆 + 镜像 Idle 转移 + 删 BoolTest）：
-    //   · 克隆体把 Idle 的四条事件转移**镜像**（BEAM SWEEP L→Beam Sweep R …），于是收到同一发
-    //     广播时它进相反的方向状态；Init 的 GetOwner 再把 `Self` 指回克隆自己。
-    //   · 本体与克隆体都把四个 sweep 状态的 `SetPosition.x` 改成 64（起点居中）。
-    //   · 本体与克隆体都把 `BoolTest` 关 `Enabled`，让方向只由「进了哪个状态」决定、不被 force bool
-    //     翻走。本体只原位改字段值、不增删动作（见 [[feedback-fsm-index-stability]]）；克隆体是本 mod
-    //     自造、别的 mod 不读它，可以自由改。
-    //   结果：不管来的是 L/R/L2/R2，都是「本体和克隆一左一右、都从 x=61 出发」。
-    //   克隆体的音频动作也一并关掉，免得声音双份。
-    //
-    // 挂点：`Boss Control/Beam Sweeper` 的 `Control` FSM OnEnable（同 ArenaSpikes / P2GroundSpikes）。
-    // 关总开关：本体字段写回、克隆体销毁。
+    // P1 和 Z/N P2 双向光墙：本体与克隆从 x=61 同时向两侧移动。
+    // 克隆反转 Idle 的转移目标；本体仅原位修改 FSM 字段，禁用 Force Left/Right 翻转，退出时复原。
+
+
     internal class BeamSweeperDual : MonoBehaviour
     {
         private const string VanillaName = "Beam Sweeper";
@@ -175,7 +148,7 @@ namespace OrbRadiance
                     if (!MirrorIdle.TryGetValue(t.FsmEvent.Name, out to)) continue;
                     t.ToState = to;
                     // ⚠ 运行期走的是 ToFsmState 引用（Fsm.DoTransition，Fsm.decompiled.cs:2329），
-                    // 不是 ToState 字符串 —— 只改字符串不改引用，事件照样走老目标（2026-10-01 实测踩过）
+                    
                     t.ToFsmState = fsm.GetState(to);
                 }
             }
@@ -204,8 +177,8 @@ namespace OrbRadiance
             sp.x.Value = CenterX;
         }
 
-        // Derive every P1 duration from the action's original value, so repeated patching does not
-        // accumulate and Teardown can restore each native action exactly.
+        // P1 的持续时间始终从原版动作值推导，避免多次补丁累积加速；
+        // Teardown 因而能准确恢复每个原版动作。
         private void SetP1MoveDuration(FsmState st, float multiplier)
         {
             if (st == null || multiplier <= 0f) return;

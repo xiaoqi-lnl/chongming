@@ -6,33 +6,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P2 高位地刺（2026-10-01 用户定）：
-    //   「当 Boss 处于 P2 时，在 y=33 处放地刺」—— P1 那排（world y 18.5）原地不动，
-    //   另起一排新的，只在 P2 战斗段存在。
-    //
-    // 时间点与 P2NailStream 完全一致（同一个 FSM、同一套状态名）：
-    //   `Absolute Radiance/Control` 进 `Arena 2 Start` → 造刺并升起
-    //                          进 `Ascend Tele`   → 拆掉
-    //   父物体 `Boss Control/Control` 进 `Battle Start` / `Refight` / `Init` / `Setup` → 拆掉
-    //   （死亡重打同场景重来，`Absolute Radiance/Control` 不会自己回 Init，得靠这一路清）
-    //
-    // 做法 = **克隆原版刺**，不新造视觉/伤害：
-    //   把 `Boss Control/Spike Control` 下的 5 个地面组（Centre / Mid L / Mid R / Far L / Far R）
-    //   各 Instantiate 一份挂回同一父物体，命名加后缀以便区分。克隆体自带原版那套
-    //   MeshRenderer + PolygonCollider2D + `Control` / `Hero Saver` 两个 FSM + 伤害组件，
-    //   所以「长什么样、怎么伤人、被英雄碰到怎么收」全和原版地板刺一致，一个字段都不用改。
-    //
-    // 高度：单根刺在组内的 local y 是 21.18（组容器本身在 world (0,0,0)），
-    //   所以把克隆组的 local y 设成 TargetWorldY - 21.18 即可让刺落在 world y = 33。
-    //   注意用**绝对值**赋值、不是偏移 —— ArenaSpikes 在 P1 开局已经把那 5 个原组下沉了
-    //   2.68（刺 21.18 → 18.5），克隆那会儿抓到的组是下沉后的位置，偏移着算会算错。
-    //
-    // 为什么要每帧补发 `UP`：
-    //   单根刺的 `Control` FSM 是 Init → Downed（碰撞体/网格都关），只有 `Downed` 状态认 `UP`
-    //   （`Floor Antic` / `Spike Up` / `Up` 都没有 UP 转移）。克隆体 OnEnable 后要过一帧才走到
-    //   Downed，所以创建当帧发一次是不够的；而且英雄碰到任意一根刺时 `Hero Saver` 会
-    //   **BroadcastAll** 发 `SPIKES DOWN`（原版机制），克隆体也会被一起打回 `Down` ——
-    //   每帧补 `UP` 就等于原版那套 0.1s 刷条，被打落后自动重新升起。
+    // HARD P2 在 y=33 额外生成一排私有地刺，不移动 P1 原有地刺。
+    // P2 离开或 Mod 关闭时销毁新增对象。
+
+
     internal class P2GroundSpikes : MonoBehaviour
     {
         // ---------------- 时间点（状态名，与 P2NailStream 同一套）----------------
@@ -66,7 +43,7 @@ namespace OrbRadiance
 
         // ---------------- 运行时 ----------------
 
-        private PlayMakerFSM control;               // Absolute Radiance/Control
+        private PlayMakerFSM control;               
 
         private PlayMakerFSM arenaFsm;              // Boss Control/Control：重打复位
         private bool arenaTried;

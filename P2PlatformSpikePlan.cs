@@ -3,7 +3,7 @@ using System.Linq;
 
 namespace OrbRadiance
 {
-    // Pure planning helpers shared by the P2 cycle and its regression harness.
+    // NORMAL P2 平台地刺的纯逻辑规划器，供运行时与回归测试复用。
     internal static class P2PlatformSpikePlan
     {
         internal static bool ShouldRun(bool enabled, bool easy, bool hard)
@@ -73,7 +73,7 @@ namespace OrbRadiance
             { platformIndex = platform; x = centerX; platformTopY = topY; }
         }
 
-        // randomIndex(maxExclusive) must return a value in [0,maxExclusive).
+        // randomIndex(maxExclusive) 必须返回 [0, maxExclusive) 范围内的值。
         internal static int[] ChooseFour(int available, Func<int, int> randomIndex)
         {
             if (available < 4) throw new ArgumentOutOfRangeException("available");

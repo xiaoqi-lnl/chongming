@@ -8,28 +8,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // hard 难度的 P2 光墙（2026-10-07 用户定）：随机出若干道预警，再同时发射激光。
-    //   2026-10-08 起改成「根部锚在**画面外一圈**、朝画面里随机点打」——见下面摆位参数块
-    //   （原因：HK 激光 prefab 枢轴在根部，摆在场地里会露出根部断面/露半场）。
-    //   照 `永恒`(ImmortalLight) 的做法：克隆现成的 `Ascend Beam`（= 辐光那道自带
-    //   `Control` FSM 的激光柱），摆好位、朝向，然后外部驱动 `ANTIC → FIRE → END`。
-    //
-    // 为什么用 `Ascend Beam`：它自带一整套「隐 → 预警(可见、无碰撞) → 开火(碰撞开、伤人)
-    //   → 收尾」的 FSM（`Boss Control/Absolute Radiance/Eye Beam Glow/Ascend Beam` 的
-    //   `Control`，PathId 3621）：`Init → Inert`（mesh/碰撞都关）`--ANTIC--> Antic`（mesh 开、
-    //   播 "Beam Antic"、**碰撞关**）`--FIRE--> Fire`（**碰撞开**、播 "Beam"、Wait 0.4）
-    //   `--END--> End`（碰撞关、播 "Beam End"）→ `Inert`。Antic/Fire 都「只认下一个事件、
-    //   会一直停住」⇒ 预警多久、开火多久完全由本组件控制，不用碰它任何字段。
-    //
-    // 时间点（状态名）：原版 P2 光墙那招 = `Attack Choices` 的 `Beam Sweep L 2` / `Beam Sweep R 2`
-    //   两个状态（`[1] Wait 2 → [2] SendEventByName(BroadcastAll) "BEAM SWEEP L2/R2"`）。
-    //   `Beam Sweeper` 的 `Idle` 认这两个广播进 sweep 状态、做出那堵横扫的墙。
-    //   本组件在 **H 下**把这两个广播**原位改名**成 bypass（`Beam Sweeper` 不认识 → 原版墙不启动，
-    //   见 PatchSuppress），再由本组件边的沿检测（命中上面两个状态）自造随机墙。
-    //   ⚠ 只动 P2（L 2 / R 2）；P1（L / R）不动 —— P1 在 N/H 都是 BeamSweeperDual 的双墙。
-    //
-    // 挂点：`Absolute Radiance/Control` 的 OnEnable（和 EyeBeamTrack 同处），且**只在 H 挂**
-    //   （N 不挂，免得 N 下「原版没被抑制 + 本组件也放」出两套墙）。难度在进战斗时读定。
+    // HARD P2 光墙：在镜头外生成 6～10 道原版激光，并同时向画面内随机目标射击。
+    // 发射前显示预警，控制偏转和碰撞；结束攻击时清理私有光束，不修改其他难度。
+
+
     internal class HardBeamWall : MonoBehaviour
     {
         // ---------------- 时间点（状态名，与 EyeBeamTrack 一套）----------------
@@ -83,7 +65,7 @@ namespace OrbRadiance
 
         // ---------------- 运行时 ----------------
 
-        private PlayMakerFSM control;     // Absolute Radiance/Control
+        private PlayMakerFSM control;     
         private PlayMakerFSM choices;     // Absolute Radiance/Attack Choices：招式触发
         private bool choicesTried;
 
@@ -353,7 +335,7 @@ namespace OrbRadiance
         }
 
         // 关卡相机当前可见的世界矩形（画面会随战斗平移/缩放，所以每趟现取）。
-        //
+        
         // ⚠ 不能用 `orthographicSize`：关卡相机是 `tk2dCamera`，它给 Unity Camera 塞了**自定义投影矩阵**
         //   （`tk2dCamera.UpdateCameraMatrix` 里 `unityCamera.projectionMatrix = …`），所以 orthographicSize
         //   是废数（实测读到 ≈480，算出的矩形 1700×960，激光全被摆到天外去了）。`Camera.main` 也不一定是

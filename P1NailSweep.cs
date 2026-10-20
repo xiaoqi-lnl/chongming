@@ -8,32 +8,15 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P1 横刺改造（2026-10-05 用户定）。
-    //
-    // 原版：`Attack Choices` 的 `A1 Choice` 随机选 `Nail L Sweep` / `Nail R Sweep` 之一，
-    //   该状态 3 个 SendEventByName 在 0.5 / 1.7 / 2.9s 发 `COMB L`（或 `COMB R`）→ 同一侧连出
-    //   3 堵靠 `Tween` 平移横扫的 comb 墙，`Wait 4.4s` 后 `Return` 收招。
-    //
-    // 改成：**左右各立一堵固定不动的 6 把竖墙**，起手 0.1s（保留出剑音效），之后**每 0.3s 一发、
-    //   左右交替** —— 从该侧墙上**随机抽一把**、脱离墙、原地锁定朝向玩家 0.01s、再以 **30 u/s
-    //   追着小骑士**飞出去；两排抽空即结束。
-    //
-    // 为什么不用原版 comb 的墙（见 [[feedback-fsm-index-stability]]）：comb 那一排是写死 **16 把**
-    //   （右 8 左 8，每次循环 +2 把）、间距不匀（组内隔 2、组间隔 4），墙还靠 `Tween` 平移扫过去。
-    //   要「固定不动 + 匀排 6 把」反而得动它 6 处 spawn 动作、还凑不出对称的 6。这里直接自己
-    //   `Instantiate` `Radiant Nail`（外观/伤害口径与 P2 飞剑一致，复用 P2NailStream.StripAndArm）。
-    //
-    // 挂钩：只针对神居无上辐光（`OnFsmEnable` 里判 `self.gameObject.name == "Absolute Radiance"`）。
-    //   普通辐光（Dream_Final_Boss/Radiance）也有同名 `Nail L/R Sweep` 状态，这边**不接管** ——
-    //   否则那边会被关掉 COMB 却没有替代，横刺直接没了。
-    //
-    // 窗口时长：把 `Nail L/R Sweep` 的 `Wait`（原版 4.4）改成算出来的总时长（见 WindowTime），
-    //   保证 boss 一直停在这一招里，直到最后一发打完才 `Return`。
+    // P1 横刺分流：Z/N 使用双侧原版移动剑墙；H 使用双侧追踪发射的独立剑刺。
+    // 保留原版剑刺碰撞与伤害逻辑，控制成组间距、方向和结束窗口。
+
+
     internal class P1NailSweep : MonoBehaviour
     {
-        // Native GG comb profile used by the N P1/P3 Type 3 rain. Values are sourced from
-        // Attack Commands' native Comb Top (Type 3): four 4-nail rows, Increment=2,
-        // Radiant Nail Speed=20; the N rain's approved interval is native Wait 0.85 / 1.5.
+        // N P1/P3 的 Type 3 剑雨使用原版 GG Comb Top 参数：
+        // 4 行×4 把、Increment=2、Radiant Nail Speed=20；
+        // N 的间隔使用原版 Wait 0.85 / 1.5。
         internal readonly struct NativeShapeProfile
         {
             internal readonly int Count;
@@ -50,8 +33,8 @@ namespace OrbRadiance
 
         internal static NativeShapeProfile Type3Profile => new NativeShapeProfile(16, 20f, 0.85f / 1.5f);
 
-        // Native Spawn RG/LG chooses one of three gap layouts per group. Preserve its asymmetric
-        // positions relative to the owner instead of synthesizing a uniformly spaced centered row.
+        // 原版 Spawn RG/LG 每组会选择三种空隙分布之一，
+        // 保留相对宿主的不对称坐标，不使用均匀居中的假造排布。
         internal static float[] CreateNativeOffsets()
             => P3PhasePlan.CreateNativeOffsets();
 
@@ -359,7 +342,7 @@ namespace OrbRadiance
                 }
                 else if (!haveView && (p.x < BoundsMin.x || p.x > BoundsMax.x || p.y < BoundsMin.y || p.y > BoundsMax.y))
                 {
-                    // Geometry is still bounded off-screen, but completion falls back to the native 5.8s Wait.
+                    // 攻击几何始终限制在屏幕外侧，结束条件回退至原版 5.8s Wait。
                     RemoveNativeWallAt(i, true);
                 }
             }
@@ -377,7 +360,7 @@ namespace OrbRadiance
             if (left > 0 && right > 0)
             {
                 nativeWallSetsGenerated++;
-                PlaySound(shootClip); // one original sword sound for each paired left/right wall
+                PlaySound(shootClip); // 每组左右剑墙只播放一次原版剑刺音效。
             }
         }
 

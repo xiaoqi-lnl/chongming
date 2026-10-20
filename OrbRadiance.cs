@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using HutongGames.PlayMaker;
 using HutongGames.PlayMaker.Actions;
 using Modding;
@@ -8,15 +9,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // 光球（Radiant Orb）改动：自定义寿命 + 撞到玩家/地形不引爆。
-    //
-    // 原版 Orb Control 的实测时序：
-    //   Init -> Chase Hero --0.5s FINISHED--> Chase Hero 2 --撞到东西 END--> Impact
-    // Chase Hero   自带 Wait 2.25 DISSIPATE（相位一兜底，通常被 0.5s 抢跑而失效）
-    // Chase Hero 2 自带 Wait 2.25 DISSIPATE（相位二兜底，光球最长再活这么久）
-    // 「撞到东西」= Chase Hero 2 里两个 Trigger2dEventLayer：
-    //   OnTriggerEnter2D 层 20 Hero Box（玩家）、OnTriggerStay2D 层 8 Terrain（地形）
-    // 相位一里的 END 没有对应转移，本来就不会引爆，所以只处理相位二。
+    // 重明 Mod 入口：注册攻击组件、统一难度分流，并保留关闭时恢复原版行为的逻辑。
+    // 光球追踪寿命与碰撞行为由对应组件修改，P4 光球时序单独处理。
+
+
     public class OrbRadiance : Mod, IGlobalSettings<OrbRadianceSettings>, IMenuMod
     {
         internal static OrbRadiance Instance;
@@ -106,12 +102,12 @@ namespace OrbRadiance
         // Attack Choices 的 Orb Recover 硬直（原版 0.5）。
         // 球招已经不走 Attack Commands（见 OrbSpawner），这段硬直失去了原本的用途，
         // 只剩下「把下一招往后推」的副作用 —— 压到 0.05，下一招基本和第一个球同时接上。
-        //
+        
         // 不能设成 0：PlayMaker 的 Wait 在 time<=0 时走的是另一条分支
         // （Actions/Wait.cs OnEnter 里直接 Fsm.Event(finishEvent) 并结束），
         // 会跳掉同状态后面的动作 —— 这个状态的第 2 个动作是广播 "CAST END"，
         // 而 Control 要靠它才能从施法态出来。少发一次，下一个「请施法」就永远等不到
-        // CAST READY，boss 会彻底卡住（2026-09-18 实测踩过）。
+        
         internal const float OrbRecoverWait = 0.01f;
 
         // P1 掉进场地下面的虚空时给的伤害，顶掉原版的「扣 1 血 + 送回场地」。
@@ -176,8 +172,8 @@ namespace OrbRadiance
                 // 尤其不能挂载 FanEyeBeam；其清理逻辑可能触及原版脸激光的 Burst 1。
                 if (!Settings.Enabled || self == null || self.Fsm == null) return;
 
-                // P1 N/H orbit takeover only tags the original Radiant Nail clone; its native
-                // damage/collider FSM remains attached, and the orbit driver controls position.
+                // P1 的 N/H 剑环仅接管原版 Radiant Nail 克隆体的位置，
+                // 其伤害、碰撞体和原版 FSM 保留。
                 if (self.FsmName == "Control" && self.gameObject != null &&
                     self.gameObject.GetComponent<DamageHero>() != null)
                     P1NailFan.TryAttachOrbit(self);
@@ -188,6 +184,13 @@ namespace OrbRadiance
 
                 if (self.FsmName == "Attack Choices" || self.FsmName == "Attack Commands")
                 {
+                    // P4 最终光球循环由 P4OrbInterval 分别调整 Orb Summon、Orb Pause 和 FinalOrb Pause；
+                    // P1/P2 使用 OrbSpawner，不受 P4 时序改动影响。
+                    if (self.FsmName == "Attack Commands" &&
+                        self.gameObject.name == "Absolute Radiance" &&
+                        self.gameObject.GetComponent<P4OrbInterval>() == null)
+                        self.gameObject.AddComponent<P4OrbInterval>().Init(self);
+
                     // 球招并行：把 Orbs 发的事件改名（Attack Commands 不认识 → 不跑球循环），
                     // 由 OrbSpawner 自己按原版节奏放球；boss 同时能接下一招
                     if (self.FsmName == "Attack Choices")
@@ -263,9 +266,18 @@ namespace OrbRadiance
                     if (self.gameObject.GetComponent<P2PlatformSpikes>() == null)
                         self.gameObject.AddComponent<P2PlatformSpikes>().Init(self);
 
-                    // N P3 keeps every native climbing platform and gives each platform one private native spike row.
+                    // N/Z P3 平台地刺：每个平台 9 根私有原版刺，H 不启用。
                     if (self.gameObject.GetComponent<P3PlatformSpikes>() == null)
                         self.gameObject.AddComponent<P3PlatformSpikes>().Init(self);
+
+                    // N P3 单道追踪光墙：预瞄追踪 0.3s + 静止 0.1s / 发射 0.2s / 间隔 0.2s。
+                    // 独立克隆 Ascend Beam，不恢复原版 P3 追踪激光，也不影响 HP2 光墙。
+                    if (self.gameObject.GetComponent<P3TrackingBeam>() == null)
+                        self.gameObject.AddComponent<P3TrackingBeam>().Init(self);
+
+                    // H P3：同时发射 3 道克隆原版 Ascend Beam，偏转 1.5~6 度，玩家 y>=115 自动收回。
+                    if (self.gameObject.GetComponent<P3HardTripleBeam>() == null)
+                        self.gameObject.AddComponent<P3HardTripleBeam>().Init(self);
 
                     // 2026-10-15 用户实测要求暂时停用 N P3 上行雨；保留实现文件供后续恢复。
                     // if (self.gameObject.GetComponent<P3UpwardRain>() == null)
@@ -302,14 +314,18 @@ namespace OrbRadiance
                     //if (self.gameObject.GetComponent<P2WidePlat>() == null)
                     //    self.gameObject.AddComponent<P2WidePlat>().Init(self);
 
-                    // 血量规划：总血 5000 + P4 重置 1600 + P4 处决血线 300（见 BossHP.cs）
+                    // 血量规划：总血 5000、转 P3 时 H=750 / ZN=1050、P4 血线 ZN=600 / H=300。
                     if (Settings.Enabled) BossHP.PatchControl(self);
 
                     // N 无限剑雨间隔按 1.5 倍提速；Z/H 保持原版（见 RageRain.cs）
                     if (Settings.Enabled) RageRain.Patch(self.Fsm);
 
-                    // P3 攀爬段不放原版激光（关掉 Ascend Cast 的 ASCEND BEAM 送信，见 P3Laser.cs）
-                    if (Settings.Enabled) P3Laser.Patch(self.Fsm);
+                    // Z P3 保留原版 ASCEND BEAM；N 由单道追踪梁接管，H 由三道梁接管。
+                    if (Settings.Enabled)
+                    {
+                        if (EffectiveEasyMode) P3Laser.Restore();
+                        else P3Laser.Patch(self.Fsm);
+                    }
 
                     // 倒地动画那一步会广播 SPIKES NONE 把五处地刺全收走
                     if (Settings.Enabled) ArenaSpikes.PatchSpikesNone(self.Fsm, ArenaSpikes.StunStartState);
@@ -323,7 +339,7 @@ namespace OrbRadiance
                 {
                     if (Settings.Enabled)
                     {
-                        // 血量相位阈值：无限落刺 3150 / 转P2 2450 / 转P3 1050（见 BossHP.cs）
+                        // 血量相位阈值：无限落刺 3150 / 转P2 2450 / 转P3 H=750、ZN=1050。
                         BossHP.PatchPhase(self);
 
                         ArenaSpikes.PatchSpikesOuter(self.Fsm);
@@ -387,6 +403,18 @@ namespace OrbRadiance
 
             SetBurstLayer(phase2, LayerHeroBox, BurstOnHeroHit);
             SetBurstLayer(phase2, LayerTerrain, BurstOnTerrainHit);
+
+            // P4 Z/N 光球追踪速度与加速度都为原生的 1.3 倍。对象池复用时按基线重算，
+            // 非 P4 用倍率 1 恢复，避免对象池中的上一局/上一阶段速度污染下一局。
+            float speedScale = IsFinalOrbPhase()
+                ? (EffectiveHardMode ? 1f : 1.3f) : 1f;
+            ScaleOrbChaseSpeed(phase1, speedScale);
+            ScaleOrbChaseSpeed(phase2, speedScale);
+            if (speedScale != 1f && lastLoggedP4SpeedScale != speedScale)
+            {
+                lastLoggedP4SpeedScale = speedScale;
+                Log("[orb-speed] P4 追踪光球倍率 " + speedScale.ToString("0.0") + "（速度上限与加速度均按原版值计算）");
+            }
         }
 
         // 记下我们改之前的值：关开关时写回去。只记一次（光球是池化复用的，
@@ -394,6 +422,62 @@ namespace OrbRadiance
         private static readonly Dictionary<Wait, float> OriginalWait = new Dictionary<Wait, float>();
         private static readonly Dictionary<Trigger2dEventLayer, int> OriginalLayer =
             new Dictionary<Trigger2dEventLayer, int>();
+        // 原始 ChaseObjectV2 追踪参数：FsmFloat 引用按动作实例保存，以免对象池反复乘倍率。
+        private static readonly Dictionary<FsmFloat, float> OriginalChase = new Dictionary<FsmFloat, float>();
+        private static bool warnedMissingFinalFlag;
+        private static bool warnedMissingChaseField;
+        private static float lastLoggedP4SpeedScale = 1f;
+
+        private static bool IsFinalOrbPhase()
+        {
+            // FINAL ORBS 只在最终阶段由 Scream 发送。此处只判断 GG_Radiance 的无上辐光，
+            // 不影响普通辐光、P1/P2 光球和其他调用同一 Orb Control 的预制体。
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "GG_Radiance") return false;
+            GameObject boss = GameObject.Find("Absolute Radiance");
+            if (boss == null) return false;
+            PlayMakerFSM commands = boss.GetComponents<PlayMakerFSM>()
+                .FirstOrDefault(f => f != null && f.Fsm != null && f.FsmName == "Attack Commands");
+            if (commands == null) return false;
+            FsmBool final = commands.Fsm.Variables.GetFsmBool("Final Orbs");
+            if (final == null)
+            {
+                if (!warnedMissingFinalFlag)
+                {
+                    warnedMissingFinalFlag = true;
+                    Instance.LogWarn("OrbRadiance: Attack Commands 缺少 Final Orbs 标记，P4 光球加速未应用");
+                }
+                return false;
+            }
+            return final.Value;
+        }
+
+        private void ScaleOrbChaseSpeed(FsmState state, float multiplier)
+        {
+            // 通过反射读取原生 ChaseObjectV2 字段，避免对 PlayMaker 动作结构作任何增删。
+            foreach (ChaseObjectV2 chase in state.Actions.OfType<ChaseObjectV2>())
+            {
+                ScaleChaseField(chase, "speedMax", multiplier);
+                ScaleChaseField(chase, "accelerationForce", multiplier);
+            }
+        }
+
+        private void ScaleChaseField(ChaseObjectV2 action, string name, float multiplier)
+        {
+            FieldInfo field = typeof(ChaseObjectV2).GetField(name,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            FsmFloat number = field == null ? null : field.GetValue(action) as FsmFloat;
+            if (number == null)
+            {
+                if (!warnedMissingChaseField)
+                {
+                    warnedMissingChaseField = true;
+                    LogWarn("OrbRadiance: ChaseObjectV2 缺少 FsmFloat 追踪字段 " + name + "，光球加速未完整应用");
+                }
+                return;
+            }
+            if (!OriginalChase.ContainsKey(number)) OriginalChase[number] = number.Value;
+            number.Value = OriginalChase[number] * multiplier;
+        }
 
         private void SetWait(FsmState state, string finishEvent, float seconds)
         {
@@ -425,10 +509,18 @@ namespace OrbRadiance
             BossHP.Restore();
             RageRain.Restore();
             P3Laser.Restore();
+            P3TrackingBeam.Restore();
+            P3HardTripleBeam.Restore();
+            P3PlatformSpikes.Restore();
+            P4OrbInterval.Restore();
             foreach (KeyValuePair<Wait, float> kv in OriginalWait)
                 if (kv.Key != null) kv.Key.time.Value = kv.Value;
             foreach (KeyValuePair<Trigger2dEventLayer, int> kv in OriginalLayer)
                 if (kv.Key != null && kv.Key.collideLayer != null) kv.Key.collideLayer.Value = kv.Value;
+            foreach (KeyValuePair<FsmFloat, float> kv in OriginalChase)
+                if (kv.Key != null) kv.Key.Value = kv.Value;
+            OriginalChase.Clear();
+            lastLoggedP4SpeedScale = 1f;
             foreach (KeyValuePair<SendEventByName, string> kv in OrbSpawner.OriginalSendEvent)
                 if (kv.Key != null && kv.Key.sendEvent != null) kv.Key.sendEvent.Value = kv.Value;
             ArenaSpikes.RestorePatched();

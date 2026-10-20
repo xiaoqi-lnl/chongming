@@ -3,8 +3,8 @@ using HutongGames.PlayMaker;
 
 namespace OrbRadiance
 {
-    // Runtime schedule shared by the normal-mode face volley and its focused regression cases.
-    // Readiness is supplied by the owning Unity component from each native projectile FSM.
+    // N 难度脸刺波次调度器；每次 Update 最多发射一轮，避免卡顿后瞬间补发多轮。
+    
     internal sealed class NFaceVolleySchedule
     {
         private enum Phase { WaitingStart, WaitingReady, Firing, Complete, Aborted, Failed }
@@ -61,7 +61,7 @@ namespace OrbRadiance
             phase = Phase.WaitingStart;
         }
 
-        // Called once per Unity Update. It intentionally dispatches at most one volley per call.
+        // 每次 Unity Update 最多发射一轮。
         internal void Tick(float now, bool[] allStarted, bool[] allReady)
         {
             if (phase == Phase.Complete || phase == Phase.Aborted || phase == Phase.Failed) return;
@@ -141,8 +141,8 @@ namespace OrbRadiance
             }
             else
             {
-                // Anchor the next launch to this actual dispatch time. A long frame never catches up
-                // by launching multiple waves in one Update.
+                
+                
                 nextFireAt = now + interval;
             }
         }

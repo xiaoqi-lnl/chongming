@@ -8,32 +8,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P2 脸刺：N按每枚刺配对原生激光；Z保留每扇原生束；H每扇保留原束并加五道反向私有束。
-    //
-    // 为什么不能走原版眼激光链：脸刺链（`Nail Fan → Eb Extra Wait 2 → Dir → CW/CCW Spawn … → End`）
-    //   和眼激光链（`NF Glow → EB 1 →（P2）EB 7/8/9`）**同属 Attack Commands 这一个 FSM**
-    //   （都在 `Boss Control/Absolute Radiance`）。发全局事件 `EYE BEAMS` 会把 Attack Commands 从
-    //   脸刺链里拽走 → 腰斩脸刺。所以**绕过 Attack Commands、直接驱动爆发体**：
-    //     `Eye Beam Glow/Burst 1` 下挂 8 个 `Radiant Beam`（各有 `Control`：Inert→Antic→Fire→End），
-    //     它们是**同一位置、互差 45° 的 8 个方向**（不是一段光的碎片），每个都是一道**完整独立**的光束
-    //     （自带 MeshRenderer/BoxCollider2D）。原版 `EB 7` 用 `[SendToChildren]` 递归广播会让 8 个全亮；
-    //     本 mod 把其中若干个当成**每扇一道的专属光束**，逐个瞄、逐个点。
-    //
-    // 一扇一道、为什么得多用几道光束：一圈（= 一扇）脸刺约 0.28s 就打完了，而一道眼激光从 ANTIC 到 END
-    //   要走 FireDelay+EndDelay；用同一道光束连着放会互相打断/合并。8 个子光束正好够 5 扇各占一道。
-    //
-    // 方向：P2 脸刺 = 5 扇面×72° 扫满 360°。起手角 θ = `Nail Fan` 里 `RandomFloat(0,360)`
-    //   写进 Attack Commands 的 `float Rotation`（`Nail Fan` 的 sequence=false，Wait 不阻塞，
-    //   进状态当帧即写好）。`Dir` 随机定 CW/CCW：CW 首扇 = [θ-72, θ]（中心 θ-36）、
-    //   CCW 首扇 = [θ, θ+72]（中心 θ+36）。
-    //   第 1 扇在第一次进 `CW/CCW Spawn` 时按 θ 取扇心；第 n 扇在 `CW/CCW Restart`（下一扇起手）时
-    //   读当前 `float Rotation` 取扇心（Restart 的 FloatAdd = -RingOffset = 0，故读到就是该扇起始角）。
-    //   角度口径与脸刺钉子一致：钉子也是 `SetRotation space=World, z=float Rotation`。
-    //
-    // 音效/震屏照 `EB 7`：clip 从 `EB 1` 的动作里取（同 AnyRadiance Radiance.cs:532-533），
-    //   震屏 = `GameCameras.instance.cameraShakeFSM.SendEvent("EnemyKillShake")`。
-    //
-    // 只在 P2 生效；出 P2/重打/关总开关 → 收链（对卡在 Antic/Fire 的 beam 补 FIRE+END 复位）。
+    // P2 脸刺配套激光：Z 使用 4 道原版光束；N 为 18 枚剑刺分别配对私有光束；H 每扇使用原束及 5 道私有束。
+    // 私有光束必须独立于原版眼激光链，避免影响其他攻击及取消时残留。
+
+
     internal class FanEyeBeam : MonoBehaviour
     {
         // ---------------- 时间点（状态名，与 P2NailFanRing / RageEyeBeam 同一套）----------------
@@ -58,8 +36,8 @@ namespace OrbRadiance
         // 校准（2026-10-05 用户实测）：按 θ∓36 瞄准后整体再顶这个角，光束才落在扇心。
         //用户自己改成了现在的数值，没下指令不准调回去
         private const float AimOffset = 89f;
-        private const float FireDelay = 0.2f;     // ANTIC → FIRE
-        private const float EndDelay = 0.35f;      // ANTIC → END
+        private const float FireDelay = 0.2f;     
+        private const float EndDelay = 0.35f;      
         private const float NormalCleanupDelay = 0.6f;
 
         private static readonly string[] BurstLiveStates = { "Antic", "Fire" };
@@ -73,7 +51,7 @@ namespace OrbRadiance
         private bool arenaTried;
         private string lastArenaState;
 
-        private Transform burst;                    // Eye Beam Glow/Burst 1
+        private Transform burst;                    
         private Transform[] beams;                  // Burst 1 下的一排 Radiant Beam，每扇占一道
         private AudioSource audio;
         private AudioClip prepareClip;
@@ -106,7 +84,7 @@ namespace OrbRadiance
         {
             internal GameObject root;
             internal PlayMakerFSM[] fsms;
-            // Only the five native beams actually claimed by this attack; never sweep Burst 1.
+            // 只处理当前攻击实际占用的 5 道原版光束，不遍历整个 Burst 1。
             internal PlayMakerFSM[] originalFsms;
             internal bool[] anticipated;
             internal bool[] fired;
@@ -193,8 +171,8 @@ namespace OrbRadiance
         private static bool IsNZVolleyMode() => NFaceVolleySchedule.IsNZVolleyMode(
             OrbRadiance.EffectiveHardMode);
 
-        // N uses an attack-local private set of 18 beam FSMs, one for each prepared native nail.
-        // The original Burst 1 children continue serving H/Z and are never borrowed by this path.
+        // N 使用本次攻击独立的 18 个私有激光 FSM，每根预备剑刺对应一束。
+        // 原版 Burst 1 子物体仍供 H/Z 使用，此路径不借用它们。
         internal bool PrepareNormalBeams(int count)
         {
             int nailsPerWave = OrbRadiance.EffectiveEasyMode ? 4 : 6;
@@ -221,7 +199,7 @@ namespace OrbRadiance
                 {
                     GameObject clone = Instantiate(beams[0].gameObject, root.transform, false);
                     clone.name = modeName + " private Radiant Beam " + (i + 1).ToString("00");
-                    clone.SetActive(true); // root is inactive: no source-state OnEnable or self-fire.
+                    clone.SetActive(true); // 根对象保持未激活，避免触发原始 OnEnable 状态和自行发射。
                     PlayMakerFSM found = null;
                     foreach (PlayMakerFSM fsm in clone.GetComponentsInChildren<PlayMakerFSM>(true))
                     {
@@ -264,7 +242,7 @@ namespace OrbRadiance
             if (fsm == null || fsm.Fsm == null || !fsm.Fsm.Started || fsm.Fsm.ActiveStateName != "Inert")
                 throw new InvalidOperationException("private face beam is not started in Inert for ANTIC index " + index);
             normalBeamSet.anticipated[index] = true;
-            // Spread all warning beams along their paired nail directions before they become visible.
+            // 在预警出现前，把每束激光沿对应剑刺的方向排布。
             fsm.transform.rotation = Quaternion.Euler(0f, 0f, anticipatedAngle);
             if (index % normalBeamSet.nailsPerWave == 0) PlayOneShot(prepareClip);
             fsm.SendEvent("ANTIC");
@@ -313,7 +291,7 @@ namespace OrbRadiance
 
         internal void CompleteNormalPattern()
         {
-            // Each private beam has its own END timer; none is shared with a later barrage.
+            // 各私有激光的 END 计时彼此独立，不复用于后续齐射。
         }
 
         internal void CancelNormalPattern()
@@ -444,8 +422,8 @@ namespace OrbRadiance
             original.rotation = Quaternion.Euler(0f, 0f, originalWorldAngle);
             for (int slot = 0; slot < angles.Length; slot++) set.fsms[baseIndex + slot].transform.rotation = Quaternion.Euler(0f, 0f, angles[slot]);
 
-            // This sector now owns this exact original beam along with its five private beams.
-            // Cancellation can safely reset these references without touching other Burst 1 users.
+            // 本扇面独占这一束原版光束，以及对应的五束私有光束；
+            // 取消攻击时只重置这些引用，不影响 Burst 1 的其他使用者。
             set.originalFsms[ring] = originalFsm;
             ownedNativeBeams.Add(original);
             originalFsm.SendEvent("ANTIC");
@@ -535,8 +513,8 @@ namespace OrbRadiance
 
         private static void ResetFailedHardGroup(HardExtraBeamSet set, int baseIndex, PlayMakerFSM original)
         {
-            // These six exact Control FSMs belong to this face-beam group; direct Inert cancels
-            // their delayed native events without briefly firing a partial beam.
+            // 这六个 Control FSM 仅属于当前脸激光组；直接切到 Inert 可取消
+            
             if (original != null && original.Fsm != null) original.Fsm.SetState("Inert");
             for (int slot = 0; slot < HardExtraOffsets.Length; slot++)
             {

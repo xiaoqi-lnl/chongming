@@ -2,9 +2,9 @@ using System;
 
 namespace OrbRadiance
 {
-    // 全局设置（Modding API IGlobalSettings 保存，落在
-    // %AppData%/../LocalLow/Team Cherry/Hollow Knight/OrbRadiance.GlobalSettings.json）。
-    // Enabled 走菜单开关；改开关即时生效（见 OrbRadiance.SetEnabled）。
+    // 全局设置由 Modding API 保存；Enabled 可在 Mods 菜单即时切换。
+    
+    
     [Serializable]
     public class OrbRadianceSettings
     {

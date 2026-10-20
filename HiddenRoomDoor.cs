@@ -140,7 +140,7 @@ namespace OrbRadiance
                 }
                 try
                 {
-                    // InitTemplate makes a private FSM copy while preserving this clone's instance variables.
+                    // InitTemplate 会创建私有 FSM 副本，并保留当前克隆体的实例变量。
                     initTemplate.Invoke(fsm, null);
                     templateField.SetValue(fsm, null);
                 }
@@ -157,8 +157,8 @@ namespace OrbRadiance
             }
             try
             {
-                // Preload clones can remain inactive, so Awake has not loaded serialized actions yet.
-                // InitData loads the now-private FSM before edits; later Awake cannot template-rebuild it.
+                // 预加载克隆可能尚未激活，Awake 还没有装入序列化动作。
+                // 先用 InitData 加载私有 FSM 再修改，防止后续 Awake 从模板重建并覆盖改动。
                 fsm.Fsm.InitData();
                 return true;
             }
@@ -179,8 +179,8 @@ namespace OrbRadiance
 
             if (hit.AttackType == AttackTypes.Spell)
             {
-                // Preserve the native spell-destroy visuals and break callback without nail recoil
-                // or consuming one of the wall's four nail hits.
+                // 保留原版法术破坏特效和破坏回调，但不触发骨钉击退，
+                // 也不消耗墙壁规定的四次骨钉命中次数。
                 if (wallFsm.Fsm.GetState("Spell Destroy") == null)
                 {
                     OrbRadiance.Instance?.LogWarn("HiddenRoom: 原生 Spell Destroy 状态缺失，忽略法术命中");
@@ -211,7 +211,7 @@ namespace OrbRadiance
                 case DirectionUtils.Right: hero.RecoilLeft(); break;
                 case DirectionUtils.Up: hero.RecoilDown(); break;
                 case DirectionUtils.Left: hero.RecoilRight(); break;
-                // NailSlash already applies the native pogo bounce for downward nail hits.
+                // 向下的骨钉攻击由 NailSlash 自行处理原版下劈反弹。
                 case DirectionUtils.Down: break;
             }
         }

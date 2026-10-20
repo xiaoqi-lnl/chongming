@@ -7,58 +7,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P2/P3 飞剑流（2026-10-01 建，2026-10-06 起兼管 P3 攀爬段）。
-    //
-    // 挂在 Absolute Radiance 上，只读它 Control FSM（`Absolute Radiance/Control`）的
-    // ActiveStateName：
-    //   `Arena 2 Start` → NORMAL 保留原版七台、HARD 撤台 + 开始持续射飞剑（boss 现身），P2 模式
-    //   `Ascend Tele`   → 恢复那 7 块 P2 平台（供攀爬）+ 切 P3 模式（P2 结束、P3 第一步，自带 Wait）
-    //   `Scream`        → 停射 + 清场（P4 开始；**瞬态**、逐帧采样采不到，所以走 StateChanged 订阅）
-    // 另外逐帧轮询父物体 `Boss Control` 的 Control FSM，一进 `Battle Start` / `Refight` /
-    // `Init` / `Setup` 就停射清场 —— 死亡重打是同一场景内重来，`Absolute Radiance/Control`
-    // 的 Start State 才是 `Init`、没有任何转移回到它（全局转移只有 `STUN 1`），所以重打后
-    // 那个 FSM 不会自己复位，飞剑得靠这一路清。
-    //
-    // P3 模式（2026-10-06 用户定：「p2结束后，恢复p2的平台供玩家攀爬，同时屏幕外发射飞剑让玩家下劈」）：
-    // 发射点 x 不变（34/85，相机只垂直跟人，横向始终在屏幕外），y = **玩家当前高度 ± 7**
-    // （抖 ±7 是用户 2026-10-06 加的），门控夹在 35~150
-    // （照抄天国余晖 `P3NailWallSpawnAction` 的 ClimbBottom/ClimbTop）。
-    // ⚠ 2026-10-06 用户又要求「把 P3 飞剑相关的代码注释掉」→ **P3 期间已不出剑**
-    // （FireOne 的 p3Mode 分支 `return false`，原逻辑留在注释里）。恢复 P2 平台 / y>64 撤台 照旧生效。
-    // ⚠ 原版在 P3 攀爬那步会对 `Plats P2A` 发 `SLOW VANISH`（会把这批又弄没），所以恢复的
-    // 那 7 块要维护：落到 `Out`/`Disappeared` 就补发 `APPEAR`，保证整段攀爬都在（MaintainP2Plats）。
-    // 另外（2026-10-06 用户定）玩家爬到 y>64 时，`Plat Sets` 下平台一次性撤掉、不再长回来
-    // （含 Ascend Set / Climb Set），上半段只能靠下劈屏幕外飞剑上去（见 VanishAllPlats）。
-    // ⚠ 唯独 `Ascend Set/Radiant Plat Small (11)` 不撤 —— 那是 P4 战唯一站的顶端平台
-    // （照天国余晖，见 P4Plat / P4PlatGroup），撤了 P4 就没地方站。
-    //
-    // 飞剑本体 = `Radiant Nail`（脸刺）prefab，引用从 Attack Commands 的 `CW Spawn` 里读，
-    // 直接 Instantiate + 毁掉它自带的 FSM，不走原版 Nail Fan 的流程。
-    // 好处是一个原版共享变量都不用碰：`CW Fire` / `CCW Fire` 要的 `FAN ATTACK` 送信、
-    // Attack Choices 的 `Nail Fan Wait`、「Please Cast / CAST READY」握手全绕开，
-    // 也就不会把 `int Spawns` / `bool Repeated` / `float Rotation` 留成脏值
-    // （`float Rotation` 会被 `CW Restart` 每次 -15 累积，越用越偏）。
-    //
-    // ⚠ 毁 FSM 有个附属代价（前身 NailRing 2026-09-28 实测踩过）：prefab 上那个
-    // `PolygonCollider2D` 序列化出来就是 `m_Enabled = 0`，靠 FSM 的 `Set Collider` 状态
-    // （`SetPolygonCollider` 动作，实现只是 `component.enabled = active`）打开。FSM 一毁
-    // 就没人开它了 —— 碰撞体一直关着 = 一个 OnTrigger 都不发，伤害直接消失。
-    // 所以 StripAndArm 必须自己把碰撞体打开。
-    //
-    // 运动模型（用户 2026-10-01 定）：
-    //   生成点  x = 34 / 85（场地在 x 48.22~72.95，这两处在场地外左右两侧），
-    //           y 每发在 34~61 之间随机、左右各自独立
-    //   节奏    左右交替：每 0.5s 一发，左 → 右 → 左 → 右（每侧实际 1s 一发）
-    //   瞄准    生成瞬间锁定小骑士当前位置，AimTime(0.01s) 之后开始直线飞行 ——
-    //           锁死后不再追踪（0.01s 不足一帧，实际观感就是「一冒头就冲你来」）
-    //   速度    30 u/s = 原版 `Fire CW` / `Fire CCW` 线速度(25) 的 1.2 倍，匀速、不转向
-    //           （原版那 30°/s 的转向这里不要，要了就不是「瞄准后直线」了）
-    //
-    // 2026-10-02 追加（用户原话）：「让飞剑在辐光释放横刺和脸刺时不生成」。
-    // 横刺 / 脸刺是 Attack Choices 里的两个招式窗口，期间暂停生成新飞剑（含前摇，用户确认）：
-    //   横刺 = `NAIL LR SWEEP` → `L or R Choice` → `Nail L Sweep 2` / `Nail R Sweep 2`
-    //   脸刺 = `NAIL FAN`      → `Nail Fan Wait` → `Nail Fan` → `Nail Fan Recover`
-    // 只读 Attack Choices 的 ActiveStateName，不动任何 FSM；已在飞的飞剑照常飞完。
+    // HARD P2 两侧交替发射飞剑；Z/N 保留和维护原版平台。
+    // P3 恢复 P2 平台并维护 Z/N 攀爬平台；进入 P4 后仅保留顶部目标平台。
+
+
     internal class P2NailStream : MonoBehaviour
     {
         // ---------------- 时间点（状态名）----------------
@@ -137,7 +89,7 @@ namespace OrbRadiance
 
         private const int NailDamage = 2;
         private const int NailHazardType = 0;
-        //BOB的思路真是太好用了你们懂吗嘻嘻嘻
+
         // 层 11（PhysLayers.ENEMIES）：能伤到玩家（11 × 20 Hero Box 的矩阵原版就开着），
         // 同时玩家下劈能弹开它（`NailSlash` 的下劈分支硬判层号 11）—— 和前身环刺一致的口径。
         // 想换成「劈不动」就把它写回 prefab 出厂值 17。
@@ -227,12 +179,12 @@ namespace OrbRadiance
             if (state == null) return;
             if (state.Name == StateEnd)
             {
-                bool normalP3Ended = p3Mode && IsNormalMode();
+                bool climbP3Ended = p3Mode && IsClimbPlatformMode();
                 StopStream();
-                if (normalP3Ended)
+                if (climbP3Ended)
                 {
-                    // P3 retained its climb route above y=64. At the transient P4 entry,
-                    // restore the established P4 rule: only Ascend Set/Small (11) remains.
+                    // Z/N P3 在 y=64 以上保留攀爬路径；进入 P4 的瞬间
+                    // 按既定规则撤除多余平台，只留下 Ascend Set/Small (11)。
                     p3ClimbPlatFsms.Clear();
                     VanishAllPlats();
                 }
@@ -266,8 +218,8 @@ namespace OrbRadiance
                 }
             }
 
-            // Mode can change without a new P2 entry. Drop old projectiles while preserving
-            // streaming and platform/P3 state so NORMAL/EASY platform maintenance keeps running.
+            // 模式可能在不重新进入 P2 的情况下变化；清理旧弹体，但保留
+            // 流状态和 P3 平台维护状态，避免 Z/N 平台停止更新。
             if (!P2PlatformSpikePlan.ShouldEmitNails(OrbRadiance.EffectiveHardMode) && shots.Count > 0)
                 ClearShots();
 
@@ -292,15 +244,14 @@ namespace OrbRadiance
 
             if (p3Mode)
             {
-                // 玩家爬到 y>64：把 Plat Sets 下所有平台一次性撤掉（闩锁，不再长回来），
-                // 之后上半段只能靠下劈屏幕外飞剑。
+                // 玩家 y>64：撤 P2 平台；Z/N 保留攀爬平台，H 延续原撤台规则。
                 if (!platsGone && HeroY() > PlatKillY)
                 {
                     VanishAllPlats();
                     platsGone = true;
                 }
                 if (!platsGone) MaintainP2Plats();
-                if (IsNormalMode()) MaintainP3ClimbPlats();
+                if (IsClimbPlatformMode()) MaintainP3ClimbPlats();
             }
             else if (streaming && normalP2PlatformsKept)
             {
@@ -345,7 +296,7 @@ namespace OrbRadiance
             if (!P2PlatformSpikePlan.ShouldEmitNails(OrbRadiance.EffectiveHardMode))
             {
                 nailPrefab = null;
-                streaming = true; // NORMAL/EASY still use this phase flag to maintain native platforms.
+                streaming = true; 
                 p3Mode = false;
                 OrbRadiance.Instance.Log("[nailstream] N/Z P2飞剑已停用；保留平台阶段与维护");
                 return;
@@ -614,7 +565,7 @@ namespace OrbRadiance
         // 并播消失动画，之后收到 `APPEAR` 还能回到 `Appear 1`。Destroy 掉的话，死亡重打时
         // `Climb Plats1` 再发 APPEAR 就没人接了 —— 爬升段会一块平台都没有。
         // 顺带，这正是 vanilla 自己在 `Arena 2 Start` 对 `Plats Climb` 做的事（同一事件、同一时刻）。
-        //
+        
         // 目标组按组遍历、只挑名字以 `Radiant Plat` 开头的：`Hazard Plat` 下还有
         // `Hazard Respawn Marker`（`Climb Plats1` 第 5/6 个动作要读它的位置调
         // `HeroController.SetHazardRespawn`，一个字段都不能动）；而 `P2 SetA` 与 `Climb Set`
@@ -667,14 +618,14 @@ namespace OrbRadiance
             p3Mode = true;
             CaptureP2Plats(P2PlatformSpikePlan.ShouldReplayAppear(normalP2PlatformsKept));
             p3ClimbPlatFsms.Clear();
-            if (IsNormalMode()) CaptureP3ClimbPlats();
+            if (IsClimbPlatformMode()) CaptureP3ClimbPlats();
 
             OrbRadiance.Instance.Log("[nailstream] 进 P3：恢复 P2 平台供攀爬；" +
-                                     (IsNormalMode() ? "NORMAL 保留 Climb/Ascend 平台至 Scream；" : "保留既有模式平台规则；") +
+                                     (IsClimbPlatformMode() ? "Z/N 保留 Climb/Ascend 平台至 Scream；" : "保留既有模式平台规则；") +
                                      "P3横向飞剑流仍停用");
         }
 
-        private static bool IsNormalMode() => P3PhasePlan.IsNormalMode(OrbRadiance.EffectiveHardMode, OrbRadiance.EffectiveEasyMode);
+        private static bool IsClimbPlatformMode() => !OrbRadiance.EffectiveHardMode;
 
         private void CaptureP3ClimbPlats()
         {
@@ -696,7 +647,7 @@ namespace OrbRadiance
                     }
                 }
             }
-            OrbRadiance.Instance.Log("[nailstream] NORMAL P3 保留爬升平台 FSM " + p3ClimbPlatFsms.Count + " 个");
+            OrbRadiance.Instance.Log("[nailstream] Z/N P3 保留爬升平台 FSM " + p3ClimbPlatFsms.Count + " 个");
         }
 
         private void MaintainP3ClimbPlats()
@@ -773,7 +724,7 @@ namespace OrbRadiance
             return hc != null ? hc.transform.position.y : 0f;
         }
 
-        // 玩家 y 过 64 之后：普通沿用既有撤台；NORMAL P3 暂时保留原版攀爬用的
+        // 玩家 y 过 64 之后：Z/N P3 保留原版攀爬用的
         // Ascend Set / Climb Set，Scream 瞬态再切回 P4 规则。维护列表只保留这两组，便于 P3 持续保台。
         // 其它平台发 `DISAPPEAR`，P4 唯一顶端平台例外。组节点与 `Hazard Respawn Marker` 不碰
         // （和 VanishP2Plats 同一套前缀过滤；Marker 名字不是 `Radiant Plat*`，天然被排除）。
@@ -795,8 +746,8 @@ namespace OrbRadiance
                 {
                     if (!c.gameObject.name.StartsWith(PlatPrefix, StringComparison.Ordinal)) continue;
 
-                    // NORMAL P3 keeps the native climbing route alive; y>64 still removes lower P2 platforms.
-                    bool keepAtThreshold = P3PhasePlan.KeepAtPlatformThreshold(IsNormalMode() && p3Mode,
+                    // Z/N P3 持续维护原版攀爬平台；y>64 仍撤除下方 P2 平台。
+                    bool keepAtThreshold = P3PhasePlan.KeepAtPlatformThreshold(IsClimbPlatformMode() && p3Mode,
                         g.name, c.gameObject.name, P4PlatGroup, P4Plat);
                     if (keepAtThreshold) continue;
 
@@ -811,7 +762,7 @@ namespace OrbRadiance
             }
 
             OrbRadiance.Instance.Log("[nailstream] 玩家 y>" + PlatKillY + "：撤掉 Plat Sets 下平台 " +
-                                     n + " 块（NORMAL P3 保留 Climb Set / Ascend Set），" +
+                                     n + " 块（Z/N P3 保留 Climb Set / Ascend Set），" +
                                      "保留 P4 顶端平台 " + P4PlatGroup + "/" + P4Plat);
         }
 

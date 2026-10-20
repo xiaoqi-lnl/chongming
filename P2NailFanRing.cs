@@ -7,34 +7,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P2 脸刺按模式分流：NORMAL 使用 3 轮×6 枚整圆齐发并逐枚配对激光；HARD 8枚/扇，EASY 4枚/扇。
-    //
-    // 第一版做成「5 圈×24 剑环」= 每圈铺满 360° 的**整圆**，用户实测判「仍是整圈、不是扇形」→ 改成本设计。
-    //
-    // 做法照搬天国余晖（RadianceBoss.cs 的 HookAttackCommands）：只改 Attack Commands 里
-    // 剑环链那几个状态的**字段值**，不增删动作（见 [[feedback-fsm-index-stability]]）。
-    //
-    // 剑环链（`Absolute Radiance/Attack Commands`，P1/P2 共用同一条）：
-    //   NAIL FAN(全局) → `Nail Fan`(Wait 0.4、float Rotation=随机 0~360、int Spawns=12、bool Repeated=false)
-    //     → `Eb Extra Wait 2`(Wait 0.25；那个 Arena==1 判断不影响流程 —— 动作跑完
-    //        `FsmState.CheckAllActionsFinished` 会自动发 FINISHED，见 FsmState.decompiled.cs:609-620)
-    //     → `Dir`(随机 CW/CCW，**每招只选一次 → 方向固定，圈与圈同向递进 = 扫射方向**) → `CW/CCW Spawn`
-    //        (生成 1 把、FloatAdd Rotation ∓RingStep、Spawns--)
-    //     → `CW/CCW Msg`(Spawns>0 回 Repeat，否则 Fire) → `CW/CCW Fire`(广播 FAN ATTACK，delay 0.3)
-    //     → `CW/CCW Double`(BoolTest Repeated) → `Restart`(下一圈) 或 `End`(发 ATTACK END)
-    // 所以 P1/P2 都走这条链 —— 要「P1 原版、P2 才扇形扫射」只能按阶段切字段值：
-    //   进 P2（Control 的 `Arena 2 Start`）→ 套用扇形参数；出 P2（`Ascend Tele`）/ 重打 / 关总开关 → 还原。
-    //
-    // 扇形怎么来（一圈 = 一个扇面，扇心逐圈同向递进）：
-    //   一圈内 Spawns 把剑只铺 **SectorWidth** 一个扇形：扇内步进 RingStep = SectorWidth / RingNails。
-    //   一圈走完 Rotation 已推进 N·RingStep = SectorWidth，再加 Restart 的圈间偏移 RingOffset
-    //   → 下一圈扇心 = 上一圈末端 + RingOffset。取 RingOffset=0 → 相邻扇首尾相接，FanWaves 个扇面
-    //   正好首尾拼满 360°，绕一圈扫回来。
-    //   **单旋钮**：FanWaves 越大 → 扇越窄、扫得越细越连续（SectorWidth = 360 / FanWaves）。
-    //
-    // H/Z 扇形圈数靠组件自己翻 `Repeated`（复刻天国余晖 NailFanWaveCounter），**只在 P2 生效**：
-    // `CW/CCW Double` 的 BoolTest 见 Repeated=false 就再去下一圈；翻 (FanWaves-2) 次后
-    // 最后一波不再翻 → 第 FanWaves 圈放行 END。P1 不翻 → 保持原版 2 圈。
+    // P2 脸刺：Z 为 1 轮×4 枚，N 为 3 轮×6 枚，H 为 5 扇面×8 枚。
+    // 按各难度设置配套激光及攻击间隔，不修改未涉及的原版招式。
+
+
     internal class P2NailFanRing : MonoBehaviour
     {
         // ---------------- 时间点（状态名，与 P2NailStream / P2GroundSpikes 同一套）----------------
@@ -248,7 +224,7 @@ namespace OrbRadiance
 
         private void PatchNormal(Fsm fsm, FsmState fan, FsmState cwSpawn, FsmState ccwSpawn)
         {
-            // Resolve while the native CW Spawn action still contains the original global prefab reference.
+            // 在原版 CW Spawn 动作仍保存全局预制体引用时解析并缓存。
             normalNailPrefab = P2NailStream.ResolveNailPrefab(gameObject);
             if (normalNailPrefab == null)
             {
@@ -534,7 +510,7 @@ namespace OrbRadiance
             if (state == "CW Spawn" || state == "CCW Spawn" || state == "Nail Fan" ||
                 state == "Eb Extra Wait 2" || state == "Dir")
             {
-                // Move out of the temporary held state while the original End path is still installed.
+                // 原版 End 路径仍存在时退出临时等待状态。
                 commands.Fsm.SetState("End");
             }
         }
@@ -550,7 +526,7 @@ namespace OrbRadiance
 
         // 复刻天国余晖 NailFanWaveCounter：`Repeated` 被 CW/CCW Double 置真后翻回假并递增，
         // 翻满 FanWaves-2 次后，最后一波只递增、**不翻**（保持真 → 下一圈 Double 见真 → End）。
-        //
+        
         // ⚠ 最后一波绝不能再翻回假：那样会多放一圈，且下面 `waves == FanWaves-1` 那支随即把计数清零
         //   → 剑环无限循环、ATTACK END 永不发出、Attack Choices 卡在 `Nail Fan`（boss 定住）。
         //   2026-10-02 实测踩到（原条件写成 `waves < FanWaves-1`）。

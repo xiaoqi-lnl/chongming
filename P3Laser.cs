@@ -5,23 +5,9 @@ using HutongGames.PlayMaker.Actions;
 
 namespace OrbRadiance
 {
-    // P3 攀爬段：不放原版激光（照天国余晖）。
-    //
-    // 原版 `Absolute Radiance/Control` 的 `Ascend Cast` 状态 = P3 攀爬段常驻态
-    // （`Ascend Tele --FINISHED--> Ascend Cast`，等玩家爬到 Y>152 才 `NEXT → Scream`）。
-    // 它第 2 个动作是 `SendEventByName "ASCEND BEAM"`（eventTarget = FSM Owner）——
-    // 全场景只有这一处发这个事件（`Absolute_Radiance__Control__fsm_3672.md:4197`），
-    // `Attack Commands` 收到后进 `AB Start → … → Aim → Aim Back` 循环，就是 P3 那发
-    // 追着玩家打的攀爬激光（mod3 AscendLaserDeflect 改的正是这条链的偏转）。
-    //
-    // 天国余晖普通模式下把这个发射器从 `Ascend Cast` 里删掉（RadianceBoss.cs:537-570）→ P3 无激光。
-    // 这里做同一件事，但按项目一贯约束不增删动作（见 [[feedback-fsm-index-stability]]）：
-    // 只把那个 `SendEventByName` 的 `Enabled` 置 false —— PlayMaker 的 `FsmState.ActivateActions`
-    // 会跳过 Enabled=false 的动作，效果与删除等价、后续动作下标不动。
-    //
-    // 不用加相位门：`Ascend Cast` 整场只在 P3 出现（P1/P2/P4 都到不了它），关它只影响 P3。
-    // `Ascend Cast` 自己的推进链（Tk2dPlayAnimation / GetPosition 跟随玩家 Y / FloatCompare→NEXT）
-    // 一个没动，爬到顶照样转 P4。
+    // P3 的原版 ASCEND BEAM 仅在 N/H 抑制，Z 保留原版激光。
+
+
     internal static class P3Laser
     {
         private const string StateName = "Ascend Cast";
@@ -61,7 +47,7 @@ namespace OrbRadiance
                                              " 的 SendEventByName，P3 激光未关");
             else if (newlyRecorded > 0)
                 OrbRadiance.Instance.Log("[p3laser] 关掉 " + StateName + " 的 " + EventName +
-                                         " 送信（" + n + " 个）→ P3 不再放原版攀爬激光");
+                                         " 送信（" + n + " 个）→ N/H P3 由自定义光束组件接管");
         }
 
         internal static void Restore()

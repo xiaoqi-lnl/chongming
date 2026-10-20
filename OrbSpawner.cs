@@ -7,29 +7,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // 「球还在生成时 boss 并行做别的招」。
-    //
-    // 原版为什么做不到：球的「一颗颗放出来」是 Attack Commands **自己**跑的 3.2s 循环
-    //   Orb Pos → Orb Summon(0.75 蓄力) → Spawn Fireball → Orb Pause(0.25) → Orb Check
-    // 而全场只有一个 Attack Commands，所有招都串行从它出去 —— 所以球招期间 boss 必然空窗。
-    // （对比：天国余晖的光墙能并行，是因为墙的实际执行者是独立对象 Beam Sweeper，
-    //  Attack Choices 只负责「发个事件启动它」，发完就走。RadianceBoss.cs:913-915。）
-    //
-    // 做法是把「放球」从 Attack Commands 手里接过来：
-    //   1. Attack Choices 的 `Orbs` 状态，发的事件名从 "ORBS" 改成 OrbBypassEvent
-    //      → Attack Commands 不认识这个名字，不再跑球循环，一直待在 Idle，
-    //        下一招可以随时进来。
-    //   2. 本组件只读 Attack Choices 的状态变化：一进 `Orbs` 就按模式开始放球
-    //      （N 固定 6 颗、Z 随机 3~4 颗、H 随机 6~8 颗），
-    //      每颗的节奏：亮蓄力特效 + 蓄力音 → 0.4s → 出球 + 出球音 → 0.25s 间隔。
-    //      **第一颗球出来那一刻**才发 ATTACK END（`Orbs` 本来就有这条转移）
-    //      → Orb Recover(0.01s) → CAST END → Attack Choices 回池选下一招；
-    //      于是 boss 只被锁 0.4s（原版 3.2s），其余球都和下一招并行。
-    //
-    // 球的生成走原版同一条路：从 Spawn Fireball 的 SpawnObjectFromGlobalPool 里读出
-    // Radiant Orb prefab，再用 ObjectPool.Spawn 交给游戏自己的对象池
-    // （这正是 SpawnObjectFromGlobalPool.OnEnter 内部做的事），所以池化复用和
-    // 「每次生成都 OnEnable」的行为与原版一致。
+    // P1/P2 光球改为后台并行发射，不阻塞 Boss 使用其他招式。
+    // 仅修改光球生成与存活流程，不接管 P4 原版最终光球循环。
+
+
     internal class OrbSpawner : MonoBehaviour
     {
         // Attack Commands 的事件表里没有这个名字 → 它收不到、不响应
@@ -226,11 +207,11 @@ namespace OrbRadiance
         }
 
         // ---- 音效：从原版的音频动作上取引用 ----
-        //
+        
         // 蓄力音（Orb Summon 的 AudioPlayerOneShotSingle）：Spawn 一个 Audio Player 预制体到蓄力点上，
         //   再 PlayOneShot dream_ghost_appear。这里复刻它的取法，连 pitch/volume 都读原动作的字段。
         // 出球音（Spawn Fireball 的 AudioPlaySimple）：在 FSM Owner（就是本物体）的 AudioSource 上
-        //   PlayOneShot mage_lord_projectile_shoot。
+        
 
         private void ResolveAudio()
         {
@@ -353,7 +334,7 @@ namespace OrbRadiance
         }
 
         // ---- 蓄力特效：从 Attack Commands 的 Orb Summon 里读 ----
-        //
+        
         // 原版 Orb Summon 的动作是：把 Shot Charge / Shot Charge 2 摆到 Vector3 Fireball Pos
         // → 等 0.75s → 出球（Spawn Fireball 里再把 emission 关掉）。
         // 那两个物体就是预警特效本体，靠 FsmOwnerDefault 引用，所以这里用

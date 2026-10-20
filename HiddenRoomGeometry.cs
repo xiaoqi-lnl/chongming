@@ -6,7 +6,7 @@ namespace OrbRadiance
 {
     internal static class HiddenRoomGeometry
     {
-        // Returns the portions of a closed/open polyline outside the strict interior of a rectangle.
+        // 返回折线位于矩形严格内部以外的片段，支持闭合或开放折线。
         internal static List<Vector2[]> ClipEdge(Vector2[] points, Rect opening)
         {
             var paths = new List<Vector2[]>();
@@ -48,7 +48,7 @@ namespace OrbRadiance
             }
             Vector2 d = b - a;
             float t0 = 0f, t1 = 1f;
-            // Strict interior: edges lying on any rectangle boundary remain intact.
+            // 严格内部不包括矩形边界；恰好贴在边界上的线段保留。
             float left = r.xMin + 1e-5f, right = r.xMax - 1e-5f;
             float bottom = r.yMin + 1e-5f, top = r.yMax - 1e-5f;
             bool intersects = LiangBarsky(a, d, left, right, bottom, top, out t0, out t1);
@@ -101,7 +101,7 @@ namespace OrbRadiance
                 Vector2 p = polygon[i], q = polygon[(i + 1) % polygon.Count];
                 twiceArea += (double)p.x * q.y - (double)q.x * p.y;
             }
-            // A triangle that only touches an aperture edge has zero clipped area and remains.
+            // 仅接触开口边缘的三角形裁剪面积为零，原样保留。
             return Math.Abs(twiceArea) > 1e-8;
         }
         private static List<Vector2> ClipPolygon(List<Vector2> input, int axis, float boundary, bool greater)

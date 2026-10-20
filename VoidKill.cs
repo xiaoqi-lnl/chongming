@@ -4,36 +4,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P1~P3 掉虚空秒杀：把原版的「扣 1 血 + 送回场地」顶成 9999 直接死。
-    //
-    // 做法跟天国余晖同一套路：不碰场景里任何 hazard 对象，只在伤害出口
-    // ModHooks.TakeDamageHook 拦一道。那个 hook 就是 hkapi/HeroController.cs:1221，
-    // TakeDamage 的第一行；而 :1401 先判 health==0 → Die() 再 return，
-    // hazardType==2 的 DieFromHazard（送回场地那条）在 :1406 —— 血归零就变成真死。
-    //
-    // ⚠ 来源判定 2026-10-01 改成**照抄天国余晖**（用户定）：
-    //   原来用的是「虚空白名单」（只认 `Cloud Hazard` / `Abyss Pit` / `Bounds Cage` 三个来源），
-    //   结果 P2 掉下去撞到的东西不在名单里 → 退回原版扣 1 血，没秒杀。
-    //   天国余晖反过来做黑名单：**不是地刺的 hazardType != 1 伤害就算掉虚空**（RadianceBoss.cs:1300-1321），
-    //   P2 无论掉到哪都秒杀，正好对上「P2 无地面、掉下去就该死」的设计。
-    //
-    //   它认地刺靠两个条件（`go.GetComponent<SpikeTag>()` 是它自己给平台刺加的内部类，
-    //   另一个是 `go.transform.IsChildOf(Spike Control)`）。OrbRadiance 没有 SpikeTag，
-    //   但地刺本来就在 `Boss Control/Spike Control` 下 —— P1 那排、以及 §10 新克隆的
-    //   P2 高位那排（也挂在同一个父物体下）都靠这一条认出来，够用。
-    //
-    //   ⚠ 例外（2026-10-01 加）：本 mod 自己生成的 P2 飞剑也是「非 1 伤害」（刻意设的
-    //   hazardType 0 不可挡直伤），形状上跟掉落坑一样 → 会被这条黑名单误秒。飞剑在
-    //   P2NailStream.StripAndArm 盖 `NailProjectile` 标记，`OnHeroTakeDamage` 认标记放行（见 Decide）。
-    //
-    // TakeDamageHook 只给 (hazardType, damage)，拿不到来源对象，所以另挂
-    // On.HeroController.TakeDamage 记录 go（这一步跟天国余晖一致）。
-    //
-    // 相位闸门 —— Absolute Radiance 的 Control FSM：
-    //   Intro Recover --FINISHED--> Arena 1 Start --FINISHED--> Arena 1 Idle    P1 开始（开）
-    //   Scream --FINISHED--> A2 Tele Choice 2 --…--> Final Antic -> Final Idle  P4 顶端战开始（关）
-    // 中间 P1/P2/P3 状态来回切很多次，所以用闩锁而不是比对当前状态名。
-    // ⚠ 两头的状态名都要挑**非瞬间**的，否则每帧采样看不到 → 见 PhaseBeginStates / PhaseEndStates。
+    // 根据当前难度修改掉入虚空的伤害，保留原版碰撞检测与传送行为。
+    // 仅在相关战斗阶段和合法伤害来源下生效，避免误伤其他场景机制。
+
+
     internal class VoidKill : MonoBehaviour
     {
         // P1 开始的状态。⚠ 唯一可靠的是 `Intro Recover`，另两个只作兜底：

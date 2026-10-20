@@ -6,13 +6,16 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // Normal P3 uses nine private native spike FSMs on every native climbing platform.
-    // Hero Saver events are localized to the platform's private group, so one hit retracts
-    // that whole row and the native FSMs handle their usual regrowth timing.
+    // Z/N P3 的 19 个攀爬平台各生成 9 根独立原版地刺，使用各自的 Hero Saver 控制整排收回和恢复。
+    // Z 的 hazardType=1，N 的 hazardType=0；根据平台实际显示状态控制升刺。
+    
+    
     internal sealed class P3PlatformSpikes : MonoBehaviour
     {
         private const string StartState = "Ascend Tele";
+        private const string CastState = "Ascend Cast";
         private const string StopState = "Scream";
+        private const float RetrySeconds = 1.0f;
         private const string PlatSetsPath = "Boss Control/Plat Sets";
         private const string SpikePath = "Boss Control/Spike Control";
         private static readonly string[] ResetStates = { "Battle Start", "Refight", "Init", "Setup" };
@@ -27,24 +30,38 @@ namespace OrbRadiance
         private string lastArenaState;
         private bool awaitingFreshEntry;
         private bool active;
+        private float nextBuildAttempt;
+        private float builtAt;
+        private bool firstRiseLogged;
         private GameObject privateRoot;
         private readonly List<PlatformRig> rigs = new List<PlatformRig>();
+        private static P3PlatformSpikes activeInstance;
 
         private sealed class PlatformRig
         {
             internal PlayMakerFSM platform;
             internal Collider2D platformCollider;
+            internal Renderer[] platformRenderers;
             internal readonly List<PlayMakerFSM> spikes = new List<PlayMakerFSM>();
+            internal readonly HashSet<PlayMakerFSM> initialRiseSent = new HashSet<PlayMakerFSM>();
+            internal readonly HashSet<PlayMakerFSM> normalizedDown = new HashSet<PlayMakerFSM>();
         }
 
         internal void Init(PlayMakerFSM fsm)
         {
             control = fsm;
+            activeInstance = this;
             if (control == null || control.Fsm == null) return;
             lastArenaState = ArenaState();
             if (IsResetState(lastArenaState)) awaitingFreshEntry = true;
             Subscribe();
             HandleState(control.Fsm.ActiveStateName);
+        }
+
+        // OrbRadiance.SetEnabled(false) 会同步调用这里，无需等待下一帧。
+        internal static void Restore()
+        {
+            if (activeInstance != null) activeInstance.Stop();
         }
 
         private void OnEnable() => Subscribe();
@@ -75,7 +92,11 @@ namespace OrbRadiance
             Stop();
         }
 
-        private void OnDestroy() => OnDisable();
+        private void OnDestroy()
+        {
+            OnDisable();
+            if (activeInstance == this) activeInstance = null;
+        }
 
         private void OnStateChanged(FsmState state)
         {
@@ -84,29 +105,65 @@ namespace OrbRadiance
 
         private void Update()
         {
-            if (!OrbRadiance.Settings.Enabled || !IsNormalMode())
+            if (!OrbRadiance.Settings.Enabled || !IsSpikeMode())
             {
                 Stop();
                 return;
             }
             if (PollArenaReset()) return;
             if (control != null && control.Fsm != null) HandleState(control.Fsm.ActiveStateName);
-            if (active) DrivePlatforms();
+            if (active)
+            {
+                DrivePlatforms();
+                if (!firstRiseLogged && Time.time - builtAt >= 2f)
+                {
+                    firstRiseLogged = true;
+                    int total = rigs.Sum(rig => rig.spikes.Count);
+                    int up = rigs.Sum(rig => rig.spikes.Count(spike => spike != null &&
+                        spike.Fsm != null && spike.Fsm.ActiveStateName == "Up"));
+                    int started = rigs.Sum(rig => rig.spikes.Count(spike => spike != null &&
+                        spike.Fsm != null && spike.Fsm.Started));
+                    int downed = rigs.Sum(rig => rig.spikes.Count(spike => spike != null &&
+                        spike.Fsm != null && spike.Fsm.ActiveStateName == "Downed"));
+                    int readyPlatforms = rigs.Count(IsPlatformReady);
+                    PlatformRig sample = rigs.FirstOrDefault();
+                    string sampleState = sample != null && sample.platform != null && sample.platform.Fsm != null
+                        ? sample.platform.Fsm.ActiveStateName : "<missing>";
+                    string sampleSpikeState = sample != null && sample.spikes.Count > 0 && sample.spikes[0] != null &&
+                        sample.spikes[0].Fsm != null ? sample.spikes[0].Fsm.ActiveStateName : "<missing>";
+                    int rendererOn = rigs.Sum(rig => rig.spikes.Sum(spike => spike == null ? 0 :
+                        spike.GetComponentsInChildren<Renderer>(true).Count(renderer => renderer != null && renderer.enabled)));
+                    int colliderOn = rigs.Sum(rig => rig.spikes.Sum(spike => spike == null ? 0 :
+                        spike.GetComponentsInChildren<Collider2D>(true).Count(collider => collider != null && collider.enabled)));
+                    OrbRadiance.Instance.Log("[p3spikes] First rise check: Up=" + up + "/" + total +
+                        ", Downed=" + downed + ", Started=" + started + ", platformReady=" + readyPlatforms +
+                        "/" + rigs.Count + ", samplePlatformState=" + sampleState +
+                        ", sampleSpikeState=" + sampleSpikeState + ", rendererOn=" + rendererOn +
+                        ", colliderOn=" + colliderOn + ", activeInHierarchy=" +
+                        (privateRoot != null && privateRoot.activeInHierarchy));
+                }
+            }
         }
 
         private void HandleState(string state)
         {
-            if (!OrbRadiance.Settings.Enabled || !IsNormalMode() || state == StopState)
+            if (!OrbRadiance.Settings.Enabled || !IsSpikeMode() || state == StopState)
             {
                 Stop();
                 return;
             }
-            if (awaitingFreshEntry)
+            // Ascend Tele 是瞬态，组件可能在它结束后才初始化。
+            // 只要原生 Control 已处在长期运行的 Ascend Cast，也允许本轮 P3 起刺。
+            // 构建失败时在 P3 按间隔重试，避免首帧源组件未就绪而整阶段无刺。
+            if (state == StartState || state == CastState)
             {
-                if (state == StartState) return;
                 awaitingFreshEntry = false;
+                if (!active && Time.time >= nextBuildAttempt)
+                {
+                    nextBuildAttempt = Time.time + RetrySeconds;
+                    BeginPlatformPhase();
+                }
             }
-            if (state == StartState && !active) BeginPlatformPhase();
         }
 
         private void OnArenaStateChanged(FsmState state)
@@ -115,6 +172,7 @@ namespace OrbRadiance
             lastArenaState = state.Name;
             if (!IsResetState(state.Name)) return;
             awaitingFreshEntry = true;
+            nextBuildAttempt = 0f;
             Stop();
         }
 
@@ -125,6 +183,7 @@ namespace OrbRadiance
             lastArenaState = state;
             if (!IsResetState(state)) return false;
             awaitingFreshEntry = true;
+            nextBuildAttempt = 0f;
             Stop();
             return true;
         }
@@ -158,7 +217,7 @@ namespace OrbRadiance
             return arena;
         }
 
-        private static bool IsNormalMode() => P3PhasePlan.IsNormalMode(OrbRadiance.EffectiveHardMode, OrbRadiance.EffectiveEasyMode);
+        private static bool IsSpikeMode() => !OrbRadiance.EffectiveHardMode;
 
         private void BeginPlatformPhase()
         {
@@ -170,7 +229,7 @@ namespace OrbRadiance
             Transform template = spikeRoot != null ? spikeRoot.transform.Find("Centre/Radiant Spike (8)") : null;
             if (platforms == null || template == null)
             {
-                OrbRadiance.Instance.LogWarn("OrbRadiance: NORMAL P3 native platform spike source missing; climb spikes not created");
+                OrbRadiance.Instance.LogWarn("OrbRadiance: N/Z P3 native platform spike source missing; climb spikes not created");
                 active = false;
                 return;
             }
@@ -180,23 +239,29 @@ namespace OrbRadiance
             PolygonCollider2D polygon = template.GetComponent<PolygonCollider2D>();
             if (sourceControl == null || polygon == null || polygon.points == null || polygon.points.Length == 0)
             {
-                OrbRadiance.Instance.LogWarn("OrbRadiance: NORMAL P3 native spike template is incomplete");
+                OrbRadiance.Instance.LogWarn("OrbRadiance: N/Z P3 native spike template is incomplete");
                 active = false;
                 return;
             }
 
+            // Z（EASY）P3 使用 hazardType=1，N 使用 hazardType=0；
+            // 先配置原版克隆再激活，避免瞬间使用错误伤害类型。
+            int spikeHazardType = OrbRadiance.EffectiveEasyMode ? 1 : 0;
             float halfWidth = PolygonHalfWidth(polygon);
             float bottomOffset = PolygonBottomOffset(polygon, template.position.y);
             if (halfWidth <= 0f || bottomOffset <= 0f)
             {
+                OrbRadiance.Instance.LogWarn("[p3spikes] Invalid native spike geometry: halfWidth=" + halfWidth +
+                    ", bottomOffset=" + bottomOffset);
                 active = false;
                 return;
             }
 
-            privateRoot = new GameObject("NORMAL P3 climbing platform spikes");
-            privateRoot.transform.SetParent(spikeRoot.transform, false);
-            privateRoot.transform.localPosition = Vector3.zero;
-            privateRoot.transform.localRotation = Quaternion.identity;
+            // 私有原版地刺克隆挂在场景根节点；原版 Spike Control 父对象
+            // 可能在阶段切换时被停用，挂在其下会导致所有子地刺隐藏。
+            privateRoot = new GameObject("N/Z P3 climbing platform spikes");
+            privateRoot.transform.position = Vector3.zero;
+            privateRoot.transform.rotation = Quaternion.identity;
             privateRoot.transform.localScale = Vector3.one;
             privateRoot.SetActive(false);
 
@@ -212,49 +277,69 @@ namespace OrbRadiance
                         if (!platform.gameObject.name.StartsWith("Radiant Plat", StringComparison.Ordinal)) continue;
                         BoxCollider2D box = platform.GetComponentsInChildren<BoxCollider2D>(true)
                             .FirstOrDefault(item => item != null && !item.isTrigger);
-                        if (!P2PlatformSpikes.TryGetBoxBounds(box, out P2PlatformSpikes.Bounds2 bounds))
-                            throw new InvalidOperationException("Platform has no solid collider: " + platform.name);
-
-                        float[] centers = P2PlatformSpikePlan.EvenlySpacedCenters(bounds.minX, bounds.maxX, halfWidth, SpikeCount);
-                        PlayMakerFSM nativePlatform = platform.GetComponents<PlayMakerFSM>()
-                            .FirstOrDefault(fsm => fsm != null && fsm.Fsm != null && fsm.FsmName == "radiant_plat");
-                        if (nativePlatform == null) throw new InvalidOperationException("Platform FSM missing: " + platform.name);
-                        GameObject privateGroup = new GameObject("P3 platform spikes " + platform.name);
-                        privateGroup.transform.SetParent(privateRoot.transform, false);
-                        var rig = new PlatformRig
+                        GameObject privateGroup = null;
+                        PlatformRig rig = null;
+                        try
                         {
-                            platform = nativePlatform,
-                            platformCollider = box
-                        };
-                        rigs.Add(rig);
-                        for (int i = 0; i < centers.Length; i++)
-                        {
-                            GameObject spike = Instantiate(template.gameObject, privateGroup.transform);
-                            if (spike == null) throw new InvalidOperationException("Native spike clone returned null");
-                            spike.name = "P3 spike " + platform.name + " #" + (i + 1);
-                            spike.transform.localScale = template.transform.localScale;
-                            spike.transform.rotation = template.transform.rotation;
-                            spike.transform.position = new Vector3(centers[i], bounds.maxY + bottomOffset, template.position.z);
-                            if (!P2PlatformSpikes.ConfigurePrivateSpike(spike, privateGroup, sourceControl, -1f, rig.spikes))
-                                throw new InvalidOperationException("Native spike FSM setup failed: " + spike.name);
+                            if (!P2PlatformSpikes.TryGetBoxBounds(box, out P2PlatformSpikes.Bounds2 bounds))
+                                throw new InvalidOperationException("no usable solid collider");
+                            float[] centers = P2PlatformSpikePlan.EvenlySpacedCenters(bounds.minX, bounds.maxX, halfWidth, SpikeCount);
+                            PlayMakerFSM nativePlatform = platform.GetComponents<PlayMakerFSM>()
+                                .FirstOrDefault(fsm => fsm != null && fsm.Fsm != null && fsm.FsmName == "radiant_plat");
+                            if (nativePlatform == null) throw new InvalidOperationException("platform FSM missing");
+                            privateGroup = new GameObject("P3 platform spikes " + platform.name);
+                            privateGroup.transform.SetParent(privateRoot.transform, false);
+                            rig = new PlatformRig
+                            {
+                                platform = nativePlatform,
+                                platformCollider = box,
+                                platformRenderers = platform.GetComponentsInChildren<Renderer>(true)
+                            };
+                            rigs.Add(rig);
+                            for (int i = 0; i < centers.Length; i++)
+                            {
+                                GameObject spike = Instantiate(template.gameObject, privateGroup.transform);
+                                if (spike == null) throw new InvalidOperationException("native spike clone returned null");
+                                spike.name = "P3 spike " + platform.name + " #" + (i + 1);
+                                spike.transform.localScale = template.transform.localScale;
+                                spike.transform.rotation = template.transform.rotation;
+                                spike.transform.position = new Vector3(centers[i], bounds.maxY + bottomOffset, template.position.z);
+                                if (!P2PlatformSpikes.ConfigurePrivateSpike(spike, privateGroup, sourceControl,
+                                        -1f, rig.spikes, spikeHazardType))
+                                    throw new InvalidOperationException("native spike FSM setup failed: " + spike.name);
+                            }
+                            platformCount++;
                         }
-                        platformCount++;
+                        catch (Exception platformError)
+                        {
+                            if (rig != null) rigs.Remove(rig);
+                            if (privateGroup != null)
+                            {
+                                privateGroup.SetActive(false);
+                                Destroy(privateGroup);
+                            }
+                            OrbRadiance.Instance.LogWarn("[p3spikes] Skip " + groupName + "/" + platform.name + ": " + platformError.Message);
+                        }
                     }
                 }
+                if (platformCount == 0)
+                    throw new InvalidOperationException("No usable climb platforms; expected " + P3PhasePlan.ClimbPlatformCount);
                 if (platformCount != P3PhasePlan.ClimbPlatformCount)
-                    throw new InvalidOperationException("Expected " + P3PhasePlan.ClimbPlatformCount +
-                        " native climb platforms, found " + platformCount);
+                    OrbRadiance.Instance.LogWarn("[p3spikes] Partial construction: " + platformCount +
+                        "/" + P3PhasePlan.ClimbPlatformCount + " climb platforms have spikes");
             }
             catch (Exception e)
             {
                 Clear();
                 active = false;
-                OrbRadiance.Instance.LogWarn("OrbRadiance: NORMAL P3 platform spike setup aborted safely: " + e.Message);
+                OrbRadiance.Instance.LogWarn("OrbRadiance: N/Z P3 platform spike setup aborted safely: " + e.Message);
                 return;
             }
 
             privateRoot.SetActive(true);
-            OrbRadiance.Instance.Log("[spikes] NORMAL P3: " + platformCount + " climb platforms, " + rigs.Sum(r => r.spikes.Count) +
+            builtAt = Time.time;
+            firstRiseLogged = false;
+            OrbRadiance.Instance.Log("[spikes] N/Z P3: " + platformCount + " climb platforms, " + rigs.Sum(r => r.spikes.Count) +
                                      " private native spikes; each platform retracts/regrows as one group");
         }
 
@@ -275,30 +360,73 @@ namespace OrbRadiance
             rigs.Clear();
         }
 
+        // 实测 P3 攀爬平台可见时停在 Appear 2；
+        // 原先只允许 Idle 且要求 BoxCollider.enabled 的条件无法满足，
+        // 结果虽然创建了 171 根地刺，却全部保持收回。
+        // 因此同时检查原版可见状态与平台自身的 Renderer，
+        private static bool IsPlatformReady(PlatformRig rig)
+        {
+            if (rig == null || rig.platform == null || rig.platform.Fsm == null ||
+                !rig.platform.gameObject.activeInHierarchy) return false;
+            string state = rig.platform.Fsm.ActiveStateName;
+            if (state != "Appear 2" && state != "Idle" && state != "In") return false;
+            return rig.platformRenderers != null && rig.platformRenderers.Any(renderer =>
+                renderer != null && renderer.enabled && renderer.gameObject.activeInHierarchy);
+        }
+
         private void DrivePlatforms()
         {
             foreach (PlatformRig rig in rigs)
             {
                 if (rig.platform == null || rig.platform.Fsm == null) continue;
-                bool ready = rig.platform.Fsm.ActiveStateName == "Idle" && rig.platformCollider != null &&
-                             rig.platformCollider.enabled && rig.platformCollider.gameObject.activeInHierarchy;
+                bool ready = IsPlatformReady(rig);
+                if (!ready)
+                {
+                    // 不要只依赖碰撞体启用标志。
+                    // 平台隐藏时必须清除有效伤害；重新出现后应再次执行原版升刺，
+                    rig.initialRiseSent.Clear();
+                    rig.normalizedDown.Clear();
+                    foreach (PlayMakerFSM spike in rig.spikes)
+                    {
+                        if (spike != null && spike.Fsm != null && spike.Fsm.Started &&
+                            spike.Fsm.ActiveStateName != "Downed")
+                            spike.SendEvent("SPIKES DOWN");
+                    }
+                    continue;
+                }
+
+                // 避免不可见的碰撞体残留。
+                // 首次激活时，即使配置期间调用过 SetState("Downed")，
+                // 克隆 FSM 也可能进入 Init/Up；必须再次归位再升刺，
+                bool initialComplete = true;
                 foreach (PlayMakerFSM spike in rig.spikes)
                 {
-                    if (spike == null || spike.Fsm == null || !spike.Fsm.Started) continue;
-                    string state = spike.Fsm.ActiveStateName;
-                    if (P3PhasePlan.ShouldForceDown(ready, state))
+                    if (spike == null || spike.Fsm == null || !spike.Fsm.Started)
                     {
-                        spike.SendEvent("SPIKES DOWN");
+                        initialComplete = false;
+                        continue;
+                    }
+                    if (rig.initialRiseSent.Contains(spike)) continue;
+                    initialComplete = false;
+                    if (spike.Fsm.ActiveStateName != "Downed")
+                    {
+                        // 这一顺序与已经验证过的 P2 地刺初始化一致。
+                        // 从未激活的根对象启用时，克隆可能重新进入 Init；
+                        // 只对该私有克隆强制设置已知的 Downed 状态，
+                        if (rig.normalizedDown.Add(spike)) spike.SetState("Downed");
+                    }
+                    else
+                    {
+                        spike.SendEvent("UP");
+                        rig.initialRiseSent.Add(spike);
                     }
                 }
+                if (!initialComplete) continue;
+
                 int downCount = rig.spikes.Count(spike => spike != null && spike.Fsm != null &&
                     spike.Fsm.Started && spike.Fsm.ActiveStateName == "Downed");
                 if (P3PhasePlan.ShouldRiseWholeGroup(ready, downCount, rig.spikes.Count))
-                {
-                    // Let the native down state register for a frame, then the unmodified native
-                    // Floor Antic wait controls the whole row's regrowth timing.
                     foreach (PlayMakerFSM spike in rig.spikes) spike.SendEvent("UP");
-                }
             }
         }
 

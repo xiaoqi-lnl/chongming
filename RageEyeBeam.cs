@@ -7,30 +7,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // 无限剑雨阶段让辐光额外放「眼激光」（脸激光）。2026-10-02 用户定：
-    //   节奏 = 持续循环放；前摇 = 眼睛亮→射出 0.5s。
-    //
-    // 挂在 Absolute Radiance 上，只读它 Control FSM（`Absolute Radiance/Control`）的 ActiveStateName：
-    //   剑雨死循环 = Rage Comb ⇄ Rage1 Loop（每 0.85s 直接生成 Radiant Nail Comb，不经过 Attack Commands）
-    //   → 所以剑雨期间 Attack Commands 是空闲的（Idle），可以拿来跑眼激光。
-    //
-    // 眼激光用 vanilla 那条**从未接线的** P2 专用链（Attack Commands 的全局转移）：
-    //   `RAGE EYES` → NF Glow 2（亮眼）→ EB 4 → EB 5 → EB 6 → 回到 EB 4 死循环
-    //   EB 4/5/6 分别驱动 Eye Beam Burst1/2/3，各 ANTIC(0)/FIRE(0.5)/END(1)、Wait 1
-    //   （vanilla 里 Control 的 `Rage Eyes` 状态会发 RAGE EYES，但那个状态孤立、没有任何转移指向它 ——
-    //    那条链原版根本没启用，这里把它接上。它不读 Attack Choices，跟剑雨互不干扰）
-    //
-    // 触发：处于剑雨态且 Attack Commands 不在眼激光链上时补发 RAGE EYES
-    //       （`Idle` 是单向死状态，出去就回不来 —— 顶刺/脸刺都会把它踢走，门不能设在 Idle。
-    //        正常只发一次：发完就进 NF Glow 2，落在链上）
-    //
-    // 前摇 0.5s：只把 NF Glow 2 的 Wait 0.5 → 0.01（眼睛亮到射出 ≈ 0.01 + EB4 FIRE 0.5 = 0.51s）。
-    //           EB 4/5/6 的 FIRE 本来就是 0.5，不动。
-    //
-    // 收尾（离开剑雨态 / 重打 / 关总开关）：Attack Commands.SetState("EB Glow End 2")
-    //   —— SetState 会 KillDelayedEvents（Fsm.decompiled.cs:2430），掐掉挂起的 FIRE/END；
-    //   但 Burst 自己的 FSM 不受影响，`Antic` 又只认 FIRE 不认 END，会卡在蓄力帧 ——
-    //   所以再对处于 Antic/Fire 的 Burst 补发 FIRE+END 复位（Antic→Fire→End→Inert）。
+    // 无限剑雨阶段 HARD 额外持续发射眼激光，其他难度不启用。
+    // 私有光束复用原版预制体，在转阶段和组件销毁时清理。
+
+
     internal class RageEyeBeam : MonoBehaviour
     {
         // ---------------- 时间点（状态名）----------------
@@ -66,7 +46,7 @@ namespace OrbRadiance
 
         // ---------------- 运行时 ----------------
 
-        private PlayMakerFSM control;               // Absolute Radiance/Control
+        private PlayMakerFSM control;               
         private PlayMakerFSM commands;              // Absolute Radiance/Attack Commands（同一 GO）
 
         private PlayMakerFSM arenaFsm;              // Boss Control/Control：重打复位
@@ -140,7 +120,6 @@ namespace OrbRadiance
             inWindow = false;
         }
 
-        // ---------------- Attack Commands ----------------
 
         private bool EnsureCommands()
         {

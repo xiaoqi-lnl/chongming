@@ -8,28 +8,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // 把 **P1** 的脸刺（剑环链）改成 ANY1（AnyRAD 1.0）同款。
-    //
-    // 来源：`参考代码/ANY1不对称/_decomp/UltimatumRadiance/Abs.cs`（AnyRAD1.0，其剑环改动继承自基础 ANY1）。
-    // 剑环链（`Absolute Radiance/Attack Commands`，P1/P2 共用同一条，见 P2NailFanRing 的头注释）：
-    //   Nail Fan（Wait 0.4、Rotation=随机 0~360、Spawns=12）→ Dir → CW/CCW Spawn
-    //     （生成 1 把、FloatAdd Rotation ∓30、Spawns--）→ CW/CCW Msg（Spawns>0 回 Repeat）
-    //     → CW/CCW Repeat（Wait）→ 回 Spawn … 一圈铺满 360°
-    //     → Fire → Double（BoolTest Repeated）→ Restart（下一圈）或 End
-    // ANY1 相对原版只动 3 处，**不动**每圈把数（仍 12）和圈内步进（仍 ∓30）：
-    //   · `CW/CCW Restart` 的 FloatAdd：∓15 → **∓10**（圈间扇心偏移）
-    //   · `CW/CCW Repeat` 的 Wait：0.01 → **-0.5**（≤0 时 PlayMaker 当帧直接发 FINISHED、不占时间）
-    //   · 圈数 2 → **3**：由本组件的计数器复刻 ANY1 的 `CWRepeats`（把 `Repeated` 翻回 false 一次）
-    //   · ANY1 还 `RemoveAction(CW/CCW Restart, 1)`（那是个本就被禁用的 Wait）——本 mod 不删动作
-    //     （见 [[feedback-fsm-index-stability]]），而它原样就是禁用的，不动即等价。
-    // 效果：三圈起始角 θ / θ-10 / θ-20（CCW 为 +10/+20），叠加成整圈实际 **10° 一钉**（原版两圈 15° 一钉）。
-    //
-    // P1/P2 分工（与 P2NailFanRing 互斥，绝不同时翻 `Repeated`）：
-    //   · P1：本组件套 ANY1 参数 + 数 3 圈。挂在 Absolute Radiance 上，进场景即 Arm。
-    //   · P2：P2NailFanRing 进 `Arena 2 Start` 时套自己的扇形参数（它把 ANY1 值记成「原值」，
-    //     出 P2 时原样还回来）；这段时间本组件靠 `P2NailFanRing.P2Patched` 让位、不驱动。
-    // 关总开关：`OrbRadiance.RestorePatched` 先让 P2NailFanRing 还原（P2 中点关会写回 ANY1），
-    // 再走本组件的 Restore 写回原版 —— 所以 Restore 必须排在 P2NailFanRing.Restore 之后。
+    // P1 脸刺分流：EASY 为 ANY1 风格的 3 圈×12 枚；NORMAL/HARD 为 10 枚环绕剑刺。
+    // P1 与 P2 共用 Attack Commands，阶段转换时必须先恢复上一阶段对 FSM 的修改。
+
+
     internal class P1NailFan : MonoBehaviour
     {
         private const string FanState = "Nail Fan";     // 新一轮起手（重置圈计数）
@@ -44,7 +26,7 @@ namespace OrbRadiance
         private PlayMakerFSM arenaControl;               // 父 Boss Control：常驻 Battle Start / Refight 边沿
 
         private bool armed;                             // ANY1 参数已套用
-        private bool orbitMode;                          // NORMAL/HARD P1 ring; EASY keeps legacy ANY1 behavior
+        private bool orbitMode;                          // NORMAL/HARD P1 为剑环；EASY 保留 ANY1 风格。
         private bool orbitAttackPending;
         private bool orbitEndSent;
         private bool commandsSubscribed;
@@ -98,8 +80,8 @@ namespace OrbRadiance
             if (active != null) active.Unpatch(true);
         }
 
-        // P1 and P2 share Attack Commands. P2 must restore any P1-owned edit before it
-        // captures values; otherwise its "original" snapshot would contain P1 overrides.
+        // P1 和 P2 共用 Attack Commands；P2 读取原始值之前必须恢复
+        // P1 所有权下的修改，否则会把 P1 改值误记为原版值。
         internal static void SuspendForPhase2()
         {
             if (active != null)
@@ -321,7 +303,7 @@ namespace OrbRadiance
                 P1FaceOrbitColumns.Begin(this, transform);
                 orbitCompletion = StartCoroutine(CompleteOrbitAttack(orbitGeneration));
                 FsmBool repeated = commands.Fsm.Variables.GetFsmBool("Repeated");
-                if (repeated != null) repeated.Value = true; // one native 10-nail ring, then native End
+                if (repeated != null) repeated.Value = true; // 生成一圈原版 10 枚剑刺后沿原版 End 退出。
             }
         }
 

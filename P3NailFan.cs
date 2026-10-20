@@ -7,30 +7,9 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P3 攀爬段：在玩家头顶放「脸刺」——照**天国余晖 P2** 那套整圈剑环（= 改过参数的原版 `Nail Fan`）。
-    //
-    // 挂在 Absolute Radiance 上，只读它 Control FSM（和 P2NailStream 同一套信号）：
-    //   `Ascend Tele`（进 P3）→ 开火；一轮（5 圈）铺完立刻接下一轮（用户 2026-10-06 定）。
-    //   `Scream`（P4 起，瞬态，靠 StateChanged）/ `Battle Start`·`Refight`·`Init`·`Setup`（重打）/
-    //   总开关关 → 停火清场。
-    //
-    // 脸刺本体**不起新流程，直接驱动钉子自带的 FSM**（这是「原版怎么放脸刺」的正解，见 Attack Commands
-    // fsm_3634 的 CW/CCW 链）：
-    //   · 每枚在圆心生成，`SetRotation z = 该枚角度`（钉子 `Fan Out` 的 GetRotation 读它），然后发 `FAN ANTIC`
-    //     → 钉子 `Fan Antic`→`Fan Out`：沿 zAngle+90 **向外弹射**（v0=30、0.88/0.02s 衰减 → 滑 ~5 单位停住）；
-    //   · 整圈铺完后 delay **0.3s** 发 `FAN ATTACK CW/CCW`（= `CW/CCW Fire` 的 delay 0.3）
-    //     → 钉子 `Fire CW/CCW`：恒定 25 速、∓30°/s 转向飞 2s → `Recycle`→`RecycleSelf`
-    //       （本 mod 按 `FlightSpeed`=23 改线速、`TurnRate` 同比例改转向，保弧线半径不变）。
-    //   · `Recycle` 对非池对象只是 `Destroy`（ObjectPool.cs:232-240），不会炸 —— 所以钉子自己会回收，
-    //     我们不手动 Destroy。
-    //
-    // 参数（= 天国余晖 P2 / ANY2）：每圈 **24 枚**（`RingStep` 15° 铺满 360°）、共 **5 圈**、
-    // 圈间再转 `RingOffset` 7.5°（5 圈累积 0/7.5/15/22.5/30° → 双层交错）、圈间 `RingInterval` 0.01s。
-    // 圆心 = (玩家x + Random(-10,+10), 玩家y + 40)（用户 2026-10-06 定）。
-    // 方向每轮随机 CW/CCW（对应原版 `Dir` 的 SendRandomEvent）。
-    //
-    // ⚠ 保留 FSM 唯一额外动作：给每枚盖 `NailProjectile` 标记 —— 钉子伤害来自 prefab 自带的
-    //   `damages_hero` FSM，hazardType 若非 1 会被 VoidKill 黑名单误当「掉虚空」秒杀，认这个标记放行。
+    // HARD P3 在玩家附近循环生成五圈剑刺，Z/N 不启用该组件。
+
+
     internal class P3NailFan : MonoBehaviour
     {
         // ---------------- 时间点（状态名，与 P2NailStream 同一套）----------------
@@ -45,17 +24,17 @@ namespace OrbRadiance
 
         // ---------------- 圆心（相对玩家，用户 2026-10-06 定）----------------
 
-        private const float CenterUpY = -30f;        // 玩家头顶 40 个单位
+        private const float CenterUpY = -30f;        // 玩家底下 40 个单位
         private const float CenterXJitter = 10f;    // X = 玩家当前 X ± 10
 
         // ---------------- 剑环参数（照天国余晖 P2 / ANY2）----------------
 
         private const int NailCount = 24;           // 每圈枚数（原版 12）
-        private const float RingStep = 360f / NailCount;   // 圈内步进 = 15°（原版 30°）
+        private const float RingStep = 360f / NailCount;   
         private const int RingCount = 5;            // 圈数（原版 2）
         private const float RingOffset = 7.5f;      // 圈间偏移（`Restart` 的 FloatAdd；原版 15°=整格）
 
-        private const int NailsPerFrame = 3;        // 每帧铺几枚（加快铺圈；原版 1）
+        private const int NailsPerFrame = 6;        // 每帧铺几枚（加快铺圈；原版 1）
         private const float NailInterval = 0.01f;   // 每批之间的间隔（`CW Repeat` 的 Wait 0.01）
         private const float RingInterval = 0.01f;   // 圈间铺圈间隔（`CW/CCW Restart` 的 Wait，原版禁用）
         private const float FanDelay = 0.3f;        // 整圈铺完 → `FAN ATTACK` 的延迟（`CW/CCW Fire` 的 delay）
@@ -132,7 +111,7 @@ namespace OrbRadiance
         {
             if (control == null || control.Fsm == null) return;
 
-            // Zenith has no P3 face attack; Normal uses P3UpwardRain. Preserve this legacy ring only in HARD.
+            // Z/N 在 P3 不使用此剑环；N 的 P3UpwardRain 已停用，只有 HARD 保留本攻击。
             if (!OrbRadiance.EffectiveHardMode)
             {
                 StopFan();

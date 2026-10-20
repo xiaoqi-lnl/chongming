@@ -7,30 +7,9 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P2 中段宽平台（2026-10-02 用户定）：
-    //   「在 y=40, x=61 处添加一个宽平台，并且让它周期性消失」—— 只在 P2 战斗段存在。
-    //
-    // 时间点与 P2NailStream / P2GroundSpikes 完全一致（同一个 FSM、同一套状态名）：
-    //   `Absolute Radiance/Control` 进 `Arena 2 Start` → 造平台
-    //                          进 `Ascend Tele`   → 拆掉
-    //   父物体 `Boss Control/Control` 进 `Battle Start` / `Refight` / `Init` / `Setup` → 拆掉
-    //   （死亡重打同场景重来，`Absolute Radiance/Control` 不会自己回 Init，得靠这一路清）
-    //
-    // 「周期性消失」照永恒（ImmortalLight）那套：不动平台几何，只对平台自带的 `radiant_plat`
-    // FSM 交替发 `SLOW VANISH` / `APPEAR`。原版这个 FSM 就自带这条链：
-    //   Idle / Appear 2 --SLOW VANISH--> Pre Vanish(WaitRandom 2~3s)
-    //                                        --FINISHED--> Vanish Antic(SendMessage FlashingGhostWounded + Wait 2s)
-    //                                        --FINISHED--> Disappear(播消失动画、关 Colliders) --FINISHED--> Disappeared
-    //   Disappeared --APPEAR--> Appear 1(开 mesh、播出现动画) --FINISHED--> Appear 2(开 Colliders) = 又能踩
-    //
-    // 用户要的时长比原版短得多（预警 0.01s + 闪烁 0.5s，不是 2~3s + 2s），所以要把克隆体
-    // 那两个 Wait 压掉。**压的是克隆体自己的 FSM 实例**（Instantiate 会连 FSM 数据一起复制），
-    // 原版 `Ascend Set` / `Climb Set` 那些平台一个都不受影响 —— 同永恒在 `Radiant Plat Small (10)/(11)`
-    // 上逐个压 `Wait` 的做法。
-    //
-    // ⚠ `FlashingGhostWounded` 是 `repeatFlash = true`（`SpriteFlash.cs:162-175`），会一直闪下去，
-    //   `Disappear` / `Disappeared` 都不掐它。所以重现（发 `APPEAR`）之前必须自己 `CancelFlash()`，
-    //   否则平台长回来后还在闪。
+    // P2 中央宽平台周期消失试验组件；当前在 OrbRadiance.cs 中未挂载。
+
+
     internal class P2WidePlat : MonoBehaviour
     {
         // ---------------- 时间点（状态名，与 P2NailStream / P2GroundSpikes 同一套）----------------
@@ -69,7 +48,7 @@ namespace OrbRadiance
 
         // ---------------- 运行时 ----------------
 
-        private PlayMakerFSM control;               // Absolute Radiance/Control
+        private PlayMakerFSM control;               
 
         private PlayMakerFSM arenaFsm;              // Boss Control/Control：重打复位
         private bool arenaTried;

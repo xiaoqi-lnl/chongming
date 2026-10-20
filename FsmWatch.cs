@@ -5,14 +5,9 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // 临时调试（2026-10-08）：打印辐光本体几个关键 FSM 的状态跳转，
-    // 用来定位「hard P2 随机光墙齐射之后 Boss 不出招」到底卡在哪个状态。
-    //
-    // 挂点在 OrbRadiance.OnFsmEnable 里那行 `FsmWatch.Watch(self);`。
-    // 定位完两处一起删：本文件 + OrbRadiance.cs 里那行。
-    //
-    // 用 Fsm.StateChanged（每次 EnterState 都触发）而不是逐帧采样 ActiveStateName
-    // —— PlayMaker 会同帧连跳多个状态，采样会漏（见 P1NailSweep.cs 头注释）。
+    // 输出辐光关键 FSM 的状态跳转，供排查招式切换异常使用。
+
+
     internal class FsmWatch : MonoBehaviour
     {
         private static readonly Dictionary<Fsm, Action<FsmState>> Live =

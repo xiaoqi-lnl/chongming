@@ -7,55 +7,10 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // 眼激光（脸激光）改成**追踪激光**：P1/P2 都改。2026-10-05 用户定。
-    //   · 只在**正式的「眼激光」招式**里生效（Attack Choices 的 `Eye Beam` 状态）。
-    //     §13 无限剑雨眼激光（RageEyeBeam）、§18 P2 脸刺伴随激光（FanEyeBeam）都不动。
-    //
-    // P4（2026-10-07 用户定）：**一波光球之间插一发**同一套追踪三连发。
-    //   P4 没有招式池——`Scream` 进 P4 时发一次 `FINAL ORBS`，之后 `Attack Commands` 一直卡在
-    //   光球环 `Orb Pos → Orb Summon(0.75) → Spawn Fireball → [Final Event] → Orb Pause(0.25)
-    //   → Orb Check → FinalOrb Pause(0.95) → Orb Pos …`，每颗光球之间都经过 `FinalOrb Pause`。
-    //   这里就把 `FinalOrb Pause` 当第二个触发点（边沿检测），进一次放一发。
-    //   注意 `Set Final Orbs` 进 P4 时会把 `Eye Beam Glow` 关掉（activate=false），所以 Run() 的
-    //   `glow.SetActive(true)` 顺带把它重新点亮；放完再关（P4 里没别的东西动这盏 glow）。
-    //   触发点 `FinalOrb Pause` 只在 P4（`bool Final Orbs=true`）出现，无需相位门。
-    //   · 一次招式**三连发**：每发都是「预瞄（`Antic` 蓄力）→ 激光（`Fire`）0.2s」，
-    //     预瞄期间光束**可见**；**发射期间方向冻结、不再追踪**。
-    //       第 1 发：预瞄 0.45s，期间**瞬时**对准小骑士（「锁定」）。
-    //       第 2、3 发：预瞄 1s，**从上一发发射时冻结的角度出发**，每帧按比例朝小骑士逼近
-    //         （`TurnLambda`：角度差每秒收敛到 e⁻λ，到点仍会差一点点 → 留给小骑士躲的余地）。
-    //   · 全程（含发与发之间）辐光**锁在原地**（Attack Choices 卡在 `Eye Beam`、Control 卡在
-    //     施法态，施法态里只有 `DecelerateV2`，不位移）；**三发都打完**才发 `ATTACK END` 放它走。
-    //
-    // 为什么必须自己驱动、不能走原版链：
-    //   `Attack Choices/Eye Beam` 里唯一的动作是 `SendEventByName`（target=FSM Owner，
-    //   sendEvent="EYE BEAMS"），它会把 `Attack Commands` 拽进原版链
-    //   （`NF Glow → EB 1 → EB 2/7 → … → EB Glow End → EB End`），那条链是**三连发**，
-    //   而且没法在中途改成「一道、追踪」。所以本 mod 把这个 sendEvent **原位改名**成
-    //   `EYE BEAMS BYPASS`（`Attack Commands` 不认识 → 链不启动），由本组件接管整段：
-    //   自己亮 `Eye Beam Glow`、自己驱动一道 `Radiant Beam`、收尾时把 `ATTACK END` 补回
-    //   `Attack Choices`（否则它会卡在 `Eye Beam`，boss 再也接不到下一招）。
-    //
-    // 用哪道光束：`Eye Beam Glow/Burst 2` 下基础那道 `Radiant Beam`
-    //   （§18 用的是 `Burst 1` 的 8 道光束；挑 `Burst 2` 免得两边抢同一批物体）。
-    //   一道 `Radiant Beam` 自带 `Control` FSM：Init→Inert（隐、无碰撞）→Antic（显，播 "Beam Antic"）
-    //   →Fire（播 "Beam"，开碰撞）→End（播 "Beam End" 淡出）。Antic/Fire 都**只认下一个事件、会一直停住**；
-    //   `End` 同时认 `FINISHED→Inert` 和 `ANTIC→Antic`，`Inert` 认 `ANTIC→Antic` —— 所以**除了 `Init`**
-    //   （只有 `FINISHED→Inert`，收到别的会丢）之外，任何状态发 `ANTIC` 都能起来。
-    //   `Init` 是本组件激活 `Eye Beam Glow` 那一帧的起始态，必须等它自己走掉再发 `ANTIC`
-    //   （同帧发的事件会被 `Init` 吃掉，见 Fsm.ProcessEvent）。
-    //
-    // 朝向：`Radiant Beam` 的碰撞盒沿**本地 +X** 伸出（size 1.766×0.503、offset 0.883 在 +X 侧），
-    //   视觉同轴 → 世界 z 角**就是**它指的方向：对准小骑士 = `Euler(0,0, atan2(骑士 - 眼睛))`。
-    //   §18 那个 `AimOffset=89` 不是光束自己的偏置，而是在补脸刺钉子的 90° 口径差——
-    //   `Radiant Nail` 贴图沿本地 +Y（见 NailTopSweep.cs：comb 转 180° 时整波「往下砸」，
-    //   钉尖朝下 ⇒ 视觉轴 +Y），`SetRotation z=Rotation` 后钉子实际指 `Rotation+90`；
-    //   §18 要让光束和钉子同向，才要在光束 z 上多加 ≈90。
-    //
-    // 音效/震屏照 §18：clip 从 `EB 1` 的动作里取，震屏 `EnemyKillShake`。
-    //
-    // 收尾（出招式 / 重打 / 关总开关）：停协程、复位光束、关 `Eye Beam Glow`，
-    //   若 `Attack Choices` 还卡在 `Eye Beam` 就补 `ATTACK END`。
+    // P1/P2 正式眼激光招式改为连续追踪射击，不影响 RageEyeBeam 和 FanEyeBeam。
+    // P4 的额外间歇眼激光仅在 HARD 生效；保存原版 FSM 参数以便恢复。
+
+
     internal class EyeBeamTrack : MonoBehaviour
     {
         // ---------------- 时间点（状态名）----------------
@@ -64,10 +19,9 @@ namespace OrbRadiance
             { "Battle Start", "Refight", "Init", "Setup" };
         private const string ArenaFsmOwner = "Boss Control";
 
-        // ---------------- Attack Choices ----------------
 
         private const string TriggerState = "Eye Beam";       // 正式眼激光招式（发 EYE BEAMS 后卡在这里）
-        private const string FinalPauseState = "FinalOrb Pause"; // P4 光球环：每颗光球之间的空档（0.95s）
+        private const string FinalPauseState = "FinalOrb Pause"; // P4 每颗光球之间的暂停状态，等待值由 P4OrbInterval 按难度调整。
         private const string EyeBeamsEvent = "EYE BEAMS";
         private const string BypassEvent = "EYE BEAMS BYPASS"; // Attack Commands 不认识 → 原版链不启动
         private const string AttackEndEvent = "ATTACK END";
@@ -97,7 +51,7 @@ namespace OrbRadiance
 
         // ---------------- 运行时 ----------------
 
-        private PlayMakerFSM control;     // Absolute Radiance/Control
+        private PlayMakerFSM control;     
         private PlayMakerFSM choices;     // Absolute Radiance/Attack Choices：招式触发 + ATTACK END
         private PlayMakerFSM commands;    // Absolute Radiance/Attack Commands：只为取音效
 
@@ -105,7 +59,7 @@ namespace OrbRadiance
         private bool arenaTried;
         private string lastArenaState;
 
-        private GameObject glow;          // Eye Beam Glow
+        private GameObject glow;          
         private Transform beam;           // 我们这一道 Radiant Beam
         private PlayMakerFSM beamFsm;     // 它的 Control FSM
 
@@ -369,7 +323,7 @@ namespace OrbRadiance
             if (clip != null && audio != null) audio.PlayOneShot(clip);
         }
 
-        // The P1 orbit columns use the same EB 1 warning/fire clips as the native eye-beam chain.
+        // P1 环绕剑环附带的竖向光束沿用原版眼激光链 EB 1 的预警与发射音效。
         internal static void PlayP1ColumnSound(bool firing)
         {
             EyeBeamTrack track = active;
@@ -468,7 +422,7 @@ namespace OrbRadiance
         // P4：Attack Commands 停在 `FinalOrb Pause`（每颗光球之间的空档）时为 true
         private bool FinalPauseActive()
         {
-            // P4's extra pause-triggered beam remains a HARD-only addition.
+            // P4 在暂停阶段附加的眼激光仍仅限 HARD。
             if (!OrbRadiance.EffectiveHardMode) return false;
             if (!EnsureCommands()) return false;
             return commands.Fsm.ActiveStateName == FinalPauseState;
