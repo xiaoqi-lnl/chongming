@@ -34,7 +34,7 @@ namespace OrbRadiance
         private const int FanWaves = 5;              // 圈数（= 扇面数）
         private const float SectorWidth = 360f / FanWaves;  // 扇面张角（度）= 360/圈数 → FanWaves 个扇面首尾拼满一圈
         private const int HardRingNails = 8;          // HARD 保留每扇 8 枚
-        private const int EasyRingNails = 4;          // EASY 每扇 4 枚，扇宽仍为 72°
+        private const int EasyRingNails = 4;          // 扇环备用参数；当前 Z/N 走 PatchNormal，不使用此值
         private const float RingOffset = 0f;         // 圈间扇心递进（CW/CCW Restart 的 FloatAdd 大小；0 = 相邻扇相接）
         private const float FanWindup = 0.01f;       // Nail Fan 的 Wait（原版 0.4）
         private const float InterRingDelay = 0.01f;  // CW/CCW Restart 的 Wait（原版 0.25 且禁用）

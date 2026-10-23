@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P2 脸刺配套激光：Z 使用 4 道原版光束；N 为 18 枚剑刺分别配对私有光束；H 每扇使用原束及 5 道私有束。
+    // P2 脸刺配套激光：Z 的 4 枚、N 的 18 枚剑刺分别配对私有光束；H 每扇使用原束及 5 道私有束。
     // 私有光束必须独立于原版眼激光链，避免影响其他攻击及取消时残留。
 
 
@@ -84,7 +84,7 @@ namespace OrbRadiance
         {
             internal GameObject root;
             internal PlayMakerFSM[] fsms;
-            // 只处理当前攻击实际占用的 5 道原版光束，不遍历整个 Burst 1。
+            // H 模式只处理当前攻击实际占用的 5 道原版光束，不遍历整个 Burst 1。
             internal PlayMakerFSM[] originalFsms;
             internal bool[] anticipated;
             internal bool[] fired;
@@ -171,8 +171,8 @@ namespace OrbRadiance
         private static bool IsNZVolleyMode() => NFaceVolleySchedule.IsNZVolleyMode(
             OrbRadiance.EffectiveHardMode);
 
-        // N 使用本次攻击独立的 18 个私有激光 FSM，每根预备剑刺对应一束。
-        // 原版 Burst 1 子物体仍供 H/Z 使用，此路径不借用它们。
+        // Z 的 4 枚、N 的 18 枚剑刺各配一束私有克隆光束。
+        // H 模式直接驱动原版光束；N/Z 只把原版 Burst 光束作为克隆模板。
         internal bool PrepareNormalBeams(int count)
         {
             int nailsPerWave = OrbRadiance.EffectiveEasyMode ? 4 : 6;
@@ -422,7 +422,7 @@ namespace OrbRadiance
             original.rotation = Quaternion.Euler(0f, 0f, originalWorldAngle);
             for (int slot = 0; slot < angles.Length; slot++) set.fsms[baseIndex + slot].transform.rotation = Quaternion.Euler(0f, 0f, angles[slot]);
 
-            // 本扇面独占这一束原版光束，以及对应的五束私有光束；
+            // H 模式下本扇面独占这一束原版光束，以及对应的五束私有光束；
             // 取消攻击时只重置这些引用，不影响 Burst 1 的其他使用者。
             set.originalFsms[ring] = originalFsm;
             ownedNativeBeams.Add(original);

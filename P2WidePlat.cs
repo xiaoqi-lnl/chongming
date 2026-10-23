@@ -24,9 +24,8 @@ namespace OrbRadiance
 
         // ---------------- 平台 ----------------
 
-        // 克隆源：Ascend Set 下那块宽平台。挑它是因为 Ascend Set 是本 mod（以及 P2NailStream 的
-        // 撤平台、vanilla 的 Climb Plats1）从没碰过的组；而且它的 scale 是 (1,1,1)、
-        // 带 `SpriteFlash`（`FlashingGhostWounded` 要它）、块本身 active = true。
+        // 克隆源：`Boss Control/Plat Sets/Ascend Set` 下的宽平台。使用精确路径避免与其他组的同名平台混淆；
+        // 模板 scale 为 (1,1,1)，带 `SpriteFlash`（供 `FlashingGhostWounded` 使用），且对象处于 active。
         // ⚠ 不能用 `Radiant Plat Wide (2)` 这个**名字**全局找：`P2 SetA` / `Climb Set` 里各有一块同名的。
         private const string TemplatePath = "Boss Control/Plat Sets/Ascend Set/Radiant Plat Wide (2)";
 

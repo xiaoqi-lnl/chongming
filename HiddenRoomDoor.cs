@@ -223,6 +223,7 @@ namespace OrbRadiance
                 OrbRadiance.Instance?.LogWarn("HiddenRoom: nativeBreak callback failed; native wall returns to Idle");
                 return false;
             }
+            WorkshopHiddenRoom.RecordWallBroken();
             if (attackCollider != null) attackCollider.enabled = false;
             OrbRadiance.Instance?.LogDebug("HiddenRoom: nativeBreak callback succeeded");
             return true;

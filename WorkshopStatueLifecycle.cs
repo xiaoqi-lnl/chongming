@@ -23,7 +23,7 @@ namespace OrbRadiance
         private static readonly FieldInfo UiStatueField = typeof(BossChallengeUI).GetField("bossStatue", BindingFlags.Instance | BindingFlags.NonPublic);
         private static readonly FieldInfo LastSelectedButtonField = typeof(BossChallengeUI).GetField("lastSelectedButton", BindingFlags.Static | BindingFlags.NonPublic);
         private static readonly Dictionary<BossChallengeUI, ChallengeUiState> UiStates = new Dictionary<BossChallengeUI, ChallengeUiState>();
-        private static HeroController deathHookHero;
+        private static HeroController modeLogHero;
 
         internal static bool? HardModeOverride => BattleModeState.Current.HasValue ? BattleModeState.Current == BattleMode.Hard : (bool?)null;
         internal static bool EffectiveHardMode(bool persistentSetting) => BattleModeState.Resolve(persistentSetting) == BattleMode.Hard;
@@ -412,17 +412,37 @@ namespace OrbRadiance
         private static void AttachBattleEndHandlers(BossSceneController controller)
         {
             if (controller != null) controller.OnBossSceneComplete += ClearBattleMode;
-            if (deathHookHero != null) deathHookHero.OnDeath -= ClearBattleMode;
-            deathHookHero = HeroController.instance;
-            if (deathHookHero != null) deathHookHero.OnDeath += ClearBattleMode;
+            if (modeLogHero != null) modeLogHero.OnDeath -= LogBattleModePreservedOnDeath;
+            modeLogHero = HeroController.instance;
+            if (modeLogHero != null) modeLogHero.OnDeath += LogBattleModePreservedOnDeath;
+            BattleMode? mode = BattleModeState.Current;
+            OrbRadiance.Instance?.Log("[challenge-mode] battle setup mode=" + (mode.HasValue ? mode.Value.ToString() : "<fallback>") +
+                " scene=" + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
         }
 
-        private static void ClearBattleMode()
+        private static void LogBattleModePreservedOnDeath()
         {
+            BattleMode? mode = BattleModeState.Current;
+            if (!mode.HasValue) return;
+            OrbRadiance.Instance?.Log("[challenge-mode] 玩家死亡，保留临时模式=" + mode.Value +
+                " scene=" + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name + "，等待同场重开或离场清理");
+        }
+
+        private static void ClearBattleMode() => ClearBattleMode("BossSceneComplete");
+
+        private static void ClearBattleMode(string reason)
+        {
+            BattleMode? previousMode = BattleModeState.Current;
+            string previousTarget = pendingTargetScene;
+            string activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
             BattleModeState.Reset();
             pendingTargetScene = null;
-            if (deathHookHero != null) deathHookHero.OnDeath -= ClearBattleMode;
-            deathHookHero = null;
+            if (modeLogHero != null) modeLogHero.OnDeath -= LogBattleModePreservedOnDeath;
+            modeLogHero = null;
+            if (previousMode.HasValue || !string.IsNullOrEmpty(previousTarget))
+                OrbRadiance.Instance?.Log("[challenge-mode] 清理临时模式=" +
+                    (previousMode.HasValue ? previousMode.Value.ToString() : "<none>") + " reason=" + reason +
+                    " scene=" + activeScene + " pending=" + (previousTarget ?? "<none>"));
         }
 
         private static string GetTierScene(BossStatue statue, int level)
@@ -441,6 +461,7 @@ namespace OrbRadiance
 
         private static void OnEnterHero(On.GameManager.orig_EnterHero orig, GameManager self, bool additiveGateSearch)
         {
+            bool recoverHiddenRoomCamera = false;
             try
             {
                 if (self != null && self.entryGateName == "door_dreamReturn" && self.playerData != null &&
@@ -452,6 +473,7 @@ namespace OrbRadiance
                         Scene target = UnityEngine.SceneManagement.SceneManager.GetSceneByName(self.nextSceneName);
                         bool ready = OrbRadiance.Settings.Enabled && requestedGate == HiddenReturnGateName &&
                             target.IsValid() && target.isLoaded && WorkshopHiddenRoom.InstallForReturn(target, requestedGate);
+                        recoverHiddenRoomCamera = ready;
                         if (!ready)
                         {
                             string fallback = OriginalReturnGateName(target);
@@ -467,6 +489,7 @@ namespace OrbRadiance
             }
             catch (Exception e) { OrbRadiance.Instance?.LogError("HiddenRoom: EnterHero 前准备专属返回门失败：" + e); }
             orig(self, additiveGateSearch);
+            if (recoverHiddenRoomCamera) WorkshopHiddenRoom.ScheduleReturnCameraRecovery();
         }
 
         private static string OriginalReturnGateName(Scene scene)
@@ -481,8 +504,10 @@ namespace OrbRadiance
         private static void OnSceneChanged(Scene oldScene, Scene newScene)
         {
             if (newScene.name == pendingTargetScene) pendingTargetScene = null;
-            else if (pendingTargetScene != null && newScene.name != "GG_Workshop") ClearBattleMode();
-            if (oldScene.name == TargetScene && newScene.name != TargetScene) ClearBattleMode();
+            else if (pendingTargetScene != null && newScene.name != "GG_Workshop")
+                ClearBattleMode("pending target interrupted by scene " + newScene.name);
+            if (oldScene.name == TargetScene && newScene.name != TargetScene)
+                ClearBattleMode("left GG_Radiance for " + newScene.name);
             ClearUiStates();
         }
 
@@ -501,7 +526,7 @@ namespace OrbRadiance
 
         internal static void OnModDisabled()
         {
-            ClearBattleMode();
+            ClearBattleMode("mod disabled");
             pendingTargetScene = null;
             ClearUiStates();
         }

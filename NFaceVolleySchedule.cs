@@ -3,7 +3,7 @@ using HutongGames.PlayMaker;
 
 namespace OrbRadiance
 {
-    // N 难度脸刺波次调度器；每次 Update 最多发射一轮，避免卡顿后瞬间补发多轮。
+    // N/Z 脸刺波次调度器；每次 Update 最多发射一轮，避免卡顿后瞬间补发多轮。
     
     internal sealed class NFaceVolleySchedule
     {

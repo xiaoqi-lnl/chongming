@@ -54,9 +54,8 @@ namespace OrbRadiance
         private const float ClimbBottom = 35f;
         private const float ClimbTop = 150f;
 
-        // 玩家爬过这个高度后，`Boss Control/Plat Sets` 下**所有**平台一律撤掉（用户 2026-10-06 定：
-        // 「在玩家y>64时让所有平台消失」），上半段只能靠下劈屏幕外飞剑上去。
-        // 一次性闩锁（过 64 就不再长回来），死亡重打才复位。
+        // P3 玩家 y>64 时撤除普通平台；Z/N 保留并维护 Climb Set / Ascend Set，H 只保留 P4 顶端平台。
+        // 一次性闩锁（过 64 后不再重建），死亡重打时复位。
         private const float PlatKillY = 64f;
 
         // 左右交替的间隔（用户定 0.5s）：一发打完 0.5s 再打另一侧。
@@ -66,8 +65,8 @@ namespace OrbRadiance
         // （2026-10-01 先在 1.5 倍 = 37.5 上测过、用户改回 1 倍 = 25；随后定为 1.2 倍 = 30。）
         private const float FlightSpeed = 30f;
 
-        // --- P3 专用（2026-10-06 从上面两项拆出，用户要求「改 P3 发射器不要影响 P2」）---
-        // 值暂时跟 P2 一样，等实测后单独调。只改这两个不会动到 P2（P2 走 Interval / FlightSpeed）。
+        // --- P3 专用（2026-10-06 从上面两项拆出，避免 P3 参数影响 P2）---
+        // P3 发射间隔 0.3s（P2 为 0.5s）；线速度当前均为 30。
         private const float P3Interval = 0.3f;
         private const float P3FlightSpeed = 30f;
 
@@ -99,8 +98,7 @@ namespace OrbRadiance
 
         private const string PlatsRoot = "Boss Control/Plat Sets";
 
-        // 要清空的组（P2 平台）。`Plat Sets` 下另外两组 `Climb Set`（1 块）与 `Ascend Set`（18 块）
-        // 是爬深渊 / P3 攀爬用的，一个都不能动。
+        // P2 常规撤除组；P3 时 Climb Set / Ascend Set 的保留与维护按 Z/N/H 模式分别处理。
         private static readonly string[] RemoveGroups = { "P2 SetA", "Hazard Plat" };
 
         private const string PlatPrefix = "Radiant Plat";
@@ -195,7 +193,7 @@ namespace OrbRadiance
         {
             if (control == null || control.Fsm == null) return;
 
-            // 总开关关掉：停射清场（平台已经撤过，不可恢复，这里只能不再造新的）
+            // 总开关关闭：停止发射并清理弹体；停止本组件的平台维护，不主动重建平台。
             if (!OrbRadiance.Settings.Enabled)
             {
                 StopStream();
@@ -610,8 +608,7 @@ namespace OrbRadiance
 
         // ---------------- P3 攀爬段：恢复 P2 平台 + 维护 ----------------
 
-        // 进 P3（`Ascend Tele`，P2 结束）：把 `Arena 2 Start` 撤掉的那 7 块重新 APPEAR 出来
-        // 供攀爬，飞剑切到 P3 模式（y 跟玩家当前高度）。飞剑**不停**，一路射到 P4 才收。
+        // 进 P3（`Ascend Tele`，P2 结束）：按模式恢复/维护攀爬平台；P3 横向飞剑当前停用，相关参数与生成逻辑保留。
         private void EnterP3()
         {
             if (!streaming) StartStream();      // 保险：万一 P2 段没开起来（StartStream 会把 p3Mode 清回 false）
@@ -726,7 +723,7 @@ namespace OrbRadiance
 
         // 玩家 y 过 64 之后：Z/N P3 保留原版攀爬用的
         // Ascend Set / Climb Set，Scream 瞬态再切回 P4 规则。维护列表只保留这两组，便于 P3 持续保台。
-        // 其它平台发 `DISAPPEAR`，P4 唯一顶端平台例外。组节点与 `Hazard Respawn Marker` 不碰
+        // 其它平台发 `DISAPPEAR`；Z/N 保留攀爬组，P4 顶端平台例外。组节点与 `Hazard Respawn Marker` 不碰
         // （和 VanishP2Plats 同一套前缀过滤；Marker 名字不是 `Radiant Plat*`，天然被排除）。
         private void VanishAllPlats()
         {

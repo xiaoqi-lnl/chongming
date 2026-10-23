@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using GlobalEnums;
 using Modding;
@@ -26,6 +27,10 @@ namespace OrbRadiance
         private static float oldSceneWidth, oldXLimit;
         private static float oldGameSceneWidth;
         private static bool boundsCaptured;
+        private static tk2dTileMap roomTilemap;
+        private static int originalTilemapWidth;
+        private static bool tilemapWidthCaptured;
+        private static int returnCameraRecoveryToken;
         private static GameObject roomRoot;
         private static GameObject statueContainer;
         private static GameObject ambientParticlesCopy;
@@ -87,6 +92,13 @@ namespace OrbRadiance
                 if (GameManager.UnsafeInstance == null)
                 { WaitFor("GameManager 尚未就绪"); retryAt = Time.unscaledTime + 1f; return; }
                 if (!BuildIntoScene(scene, false)) { retryAt = Time.unscaledTime + 1f; return; }
+                if (!RestorePersistedWallState())
+                {
+                    Cleanup(false);
+                    WaitFor("已保存的隐藏墙状态暂未恢复成功，将重试");
+                    retryAt = Time.unscaledTime + 1f;
+                    return;
+                }
                 lastWaitLog = null;
                 OrbRadiance.Instance?.LogDebug("HiddenRoom: GG_Workshop 场景对象、相机与 GameManager 均已就绪；骨钉入口已挂接");
                 OrbRadiance.Instance?.Log("HiddenRoom: GG_Workshop 房间已安装，入口基准 x=" + originX.ToString("F3"));
@@ -96,6 +108,25 @@ namespace OrbRadiance
                 OrbRadiance.Instance?.LogError("HiddenRoom: 初始化失败，将在 2 秒后重试：" + e);
                 Cleanup(false); retryAt = Time.unscaledTime + 2f;
             }
+        }
+
+        private static bool RestorePersistedWallState()
+        {
+            if (OrbRadiance.LocalSettings == null || !OrbRadiance.LocalSettings.HiddenRoomWallBroken) return true;
+            if (!OpenDoorCore(true)) return false;
+            Transform seam = roomRoot == null ? null : roomRoot.transform.Find("Hidden nail seam");
+            if (seam == null) return false;
+            seam.gameObject.SetActive(false);
+            OrbRadiance.Instance?.Log("HiddenRoom: 已按当前存档恢复已打破的隐藏墙");
+            return true;
+        }
+
+        internal static void RecordWallBroken()
+        {
+            if (OrbRadiance.LocalSettings == null) OrbRadiance.LocalSettings = new OrbRadianceLocalSettings();
+            if (OrbRadiance.LocalSettings.HiddenRoomWallBroken) return;
+            OrbRadiance.LocalSettings.HiddenRoomWallBroken = true;
+            OrbRadiance.Instance?.Log("HiddenRoom: 玩家首次打破隐藏墙，状态已写入当前档本地设置");
         }
 
         private static bool BuildIntoScene(Scene scene, bool returnScene)
@@ -146,6 +177,95 @@ namespace OrbRadiance
             }
         }
 
+        internal static void ScheduleReturnCameraRecovery()
+        {
+            GameManager gm = GameManager.UnsafeInstance;
+            if (gm == null || !installed || !open || installedScene.name != SceneName || !OrbRadiance.Settings.Enabled) return;
+            int token = ++returnCameraRecoveryToken;
+            gm.StartCoroutine(ReturnCameraRecovery(token, installedScene));
+        }
+
+        private static IEnumerator ReturnCameraRecovery(int token, Scene expectedScene)
+        {
+            float deadline = Time.realtimeSinceStartup + 12f;
+            int readyFixedUpdates = 0;
+            while (readyFixedUpdates < 2 && Time.realtimeSinceStartup < deadline)
+            {
+                if (token != returnCameraRecoveryToken || !installed || !open || installedScene != expectedScene ||
+                    !OrbRadiance.Settings.Enabled) yield break;
+                GameManager gm = GameManager.UnsafeInstance;
+                HeroController hero = HeroController.instance;
+                bool ready = UnityEngine.SceneManagement.SceneManager.GetActiveScene() == expectedScene && gm != null &&
+                    gm.gameState == GameState.PLAYING && hero != null &&
+                    GameCameras.instance != null && GameCameras.instance.cameraController != null &&
+                    GameCameras.instance.cameraController.tilemap != null &&
+                    GameCameras.instance.cameraController.tilemap.gameObject.scene == expectedScene &&
+                    !hero.cState.transitioning &&
+                    hero.transitionState == HeroTransitionState.WAITING_TO_TRANSITION;
+                readyFixedUpdates = ready ? readyFixedUpdates + 1 : 0;
+                if (readyFixedUpdates < 2) yield return new WaitForFixedUpdate();
+            }
+            if (readyFixedUpdates < 2)
+            {
+                OrbRadiance.Instance?.LogWarn("HiddenRoom: 返回镜头恢复等待超时，保留原生当前状态");
+                yield break;
+            }
+
+            GameManager manager = GameManager.UnsafeInstance;
+            HeroController returnedHero = HeroController.instance;
+            Vector3 heroPosition = returnedHero == null ? Vector3.zero : returnedHero.transform.position;
+            bool stillInRoom = returnedHero != null && heroPosition.x >= roomLeft && heroPosition.x <= roomRight &&
+                heroPosition.y > 34.5f && heroPosition.y < 47.5f;
+            if (!stillInRoom || UnityEngine.SceneManagement.SceneManager.GetActiveScene() != expectedScene || !installed || !open ||
+                !OrbRadiance.Settings.Enabled) yield break;
+
+            CameraLockArea inspectLock = hiddenStatue == null ? null : hiddenStatue.cameraLock;
+            if (inspectLock != null && inspectLock.isActiveAndEnabled)
+            {
+                LogReturnCameraDiagnostic("inspect-lock-active-skip", returnedHero, manager);
+                yield break;
+            }
+
+            CameraController controller = GameCameras.instance == null ? null : GameCameras.instance.cameraController;
+            Transform lockTransform = roomRoot == null ? null : roomRoot.transform.Find("Room camera lock");
+            CameraLockArea roomLock = lockTransform == null ? null : lockTransform.GetComponent<CameraLockArea>();
+            Collider2D roomCollider = lockTransform == null ? null : lockTransform.GetComponent<Collider2D>();
+            if (controller == null || controller.tilemap == null || controller.tilemap.gameObject.scene != expectedScene ||
+                roomLock == null || !roomLock.isActiveAndEnabled || roomLock.gameObject.scene != expectedScene ||
+                roomCollider == null || !roomCollider.isActiveAndEnabled || !roomCollider.OverlapPoint(returnedHero.transform.position))
+            {
+                LogReturnCameraDiagnostic("room-lock-unavailable-follow", returnedHero, manager);
+                if (controller != null && controller.tilemap != null && controller.tilemap.gameObject.scene == expectedScene)
+                {
+                    if (GameCameras.instance.cameraTarget != null)
+                        GameCameras.instance.cameraTarget.mode = CameraTarget.TargetMode.FOLLOW_HERO;
+                    controller.SetMode(CameraController.CameraMode.FOLLOWING);
+                }
+                yield break;
+            }
+
+            LogReturnCameraDiagnostic("before-room-lock-snap", returnedHero, manager);
+            controller.ReleaseLock(roomLock);
+            controller.ResetStartTimer();
+            controller.LockToArea(roomLock);
+            LogReturnCameraDiagnostic("room-lock-snap-complete", returnedHero, manager);
+        }
+
+        private static void LogReturnCameraDiagnostic(string label, HeroController hero, GameManager gm)
+        {
+            GameCameras gameCameras = GameCameras.instance;
+            CameraController controller = gameCameras == null ? null : gameCameras.cameraController;
+            CameraTarget target = gameCameras == null ? null : gameCameras.cameraTarget;
+            Vector3 heroPosition = hero == null ? Vector3.zero : hero.transform.position;
+            Vector3 cameraPosition = controller == null ? Vector3.zero : controller.transform.position;
+            Vector3 targetPosition = target == null ? Vector3.zero : target.transform.position;
+            int width = roomTilemap != null ? roomTilemap.width : gm != null && gm.tilemap != null ? gm.tilemap.width : -1;
+            OrbRadiance.Instance?.Log("HiddenRoom: return camera " + label + " hero=" + heroPosition +
+                " camera=" + cameraPosition + " target=" + targetPosition + " mode=" +
+                (controller == null ? "<missing>" : controller.mode.ToString()) + " targetMode=" +
+                (target == null ? "<missing>" : target.mode.ToString()) + " tilemapWidth=" + width);
+        }
+
         private static TransitionPoint FindTransition(Scene scene, string gateName)
         {
             if (string.IsNullOrEmpty(gateName)) return null;
@@ -164,7 +284,7 @@ namespace OrbRadiance
 
         private static void BuildRoom(GameObject root, Scene scene)
         {
-            // 隐藏门的受击区域位于原墙内侧，只有骨钉命中才能开启通道。
+            // 隐藏门受击区域位于原墙内侧；骨钉命中推进原墙破坏流程，法术命中走原生 Spell Destroy 状态。
             GameObject door = new GameObject("Hidden nail seam"); door.layer = 19; door.transform.SetParent(root.transform, false); door.transform.position = new Vector3(originX + .18f + 1.2f, 37f, 0f);
             BoxCollider2D hit = door.AddComponent<BoxCollider2D>(); hit.isTrigger = true; hit.size = new Vector2(.8f, 3.8f);
             HiddenRoomDoor doorController = door.AddComponent<HiddenRoomDoor>();
@@ -658,6 +778,8 @@ namespace OrbRadiance
             if (!installed || !OrbRadiance.Settings.Enabled || (!allowInactiveScene && !IsCurrentScene)) return false;
             try
             {
+                if (!ExtendWorkshopTilemapWidth())
+                    throw new InvalidOperationException("无法唯一定位当前 GG_Workshop 场景的 tk2dTileMap");
                 terrain = new WorkshopTerrainPatch();
                 terrain.Apply(installedScene, originX, Opening);
                 open = true;
@@ -680,11 +802,8 @@ namespace OrbRadiance
             catch (Exception e)
             {
                 SetRoomClosed();
-                if (boundsCaptured && installedScene == UnityEngine.SceneManagement.SceneManager.GetActiveScene())
-                {
-                    if (camera != null) { camera.sceneWidth = oldSceneWidth; camera.xLimit = oldXLimit; }
-                    if (gameManager != null) gameManager.sceneWidth = oldGameSceneWidth;
-                }
+                RestoreTilemapWidth();
+                RestoreCameraBounds();
                 camera = null; gameManager = null; boundsCaptured = false;
                 if (terrain != null) terrain.Restore(); terrain = null; open = false;
                 OrbRadiance.Instance?.LogError("HiddenRoom: 开门失败，地形已回滚：" + e);
@@ -1037,8 +1156,11 @@ namespace OrbRadiance
             if (!boundsCaptured)
             {
                 camera = candidate; gameManager = GameManager.UnsafeInstance;
-                oldSceneWidth = camera.sceneWidth; oldXLimit = camera.xLimit;
-                oldGameSceneWidth = gameManager == null ? 0f : gameManager.sceneWidth;
+                bool mapWasExpanded = tilemapWidthCaptured && candidate.tilemap == roomTilemap;
+                oldSceneWidth = mapWasExpanded ? originalTilemapWidth : camera.sceneWidth;
+                oldXLimit = mapWasExpanded ? Mathf.Max(0f, originalTilemapWidth - 14.6f) : camera.xLimit;
+                oldGameSceneWidth = gameManager == null ? 0f :
+                    mapWasExpanded && gameManager.tilemap == roomTilemap ? originalTilemapWidth : gameManager.sceneWidth;
                 boundsCaptured = true;
             }
             float wantedWidth = roomRight + 14.6f;
@@ -1047,8 +1169,78 @@ namespace OrbRadiance
             if (gameManager != null) gameManager.sceneWidth = Mathf.Max(oldGameSceneWidth, wantedWidth);
         }
 
+        private static bool ExtendWorkshopTilemapWidth()
+        {
+            tk2dTileMap map = GameManager.UnsafeInstance == null ? null : GameManager.UnsafeInstance.tilemap;
+            if (map == null || map.gameObject.scene != installedScene)
+            {
+                List<tk2dTileMap> candidates = new List<tk2dTileMap>();
+                foreach (GameObject root in installedScene.GetRootGameObjects())
+                    foreach (tk2dTileMap candidate in root.GetComponentsInChildren<tk2dTileMap>(true))
+                        if (candidate != null && candidate.gameObject.scene == installedScene) candidates.Add(candidate);
+                if (candidates.Count != 1)
+                {
+                    OrbRadiance.Instance?.LogWarn("HiddenRoom: 返回场景 tilemap 不唯一或缺失，取消开门 count=" + candidates.Count);
+                    return false;
+                }
+                map = candidates[0];
+            }
+            if (map == null || map.gameObject.scene != installedScene || installedScene.name != SceneName) return false;
+            if (!tilemapWidthCaptured)
+            {
+                roomTilemap = map;
+                originalTilemapWidth = map.width;
+                tilemapWidthCaptured = true;
+                CaptureBoundsBeforeTilemapExpansion(map);
+            }
+            else if (roomTilemap != map)
+            {
+                OrbRadiance.Instance?.LogWarn("HiddenRoom: tilemap 来源在同一安装周期内发生变化，取消开门");
+                return false;
+            }
+
+            map.width = Mathf.Max(originalTilemapWidth, Mathf.CeilToInt(roomRight + 14.6f));
+            OrbRadiance.Instance?.Log("HiddenRoom: GG_Workshop tilemap.width 扩展 " + originalTilemapWidth + " -> " + map.width);
+            return true;
+        }
+
+        private static void CaptureBoundsBeforeTilemapExpansion(tk2dTileMap map)
+        {
+            CameraController candidate = GameCameras.instance == null ? null : GameCameras.instance.cameraController;
+            GameManager gm = GameManager.UnsafeInstance;
+            if (candidate == null || candidate.tilemap != map) return;
+            camera = candidate;
+            gameManager = gm;
+            oldSceneWidth = camera.sceneWidth;
+            oldXLimit = camera.xLimit;
+            oldGameSceneWidth = gm == null ? 0f : gm.sceneWidth;
+            boundsCaptured = true;
+        }
+
+        private static void RestoreTilemapWidth()
+        {
+            if (tilemapWidthCaptured && roomTilemap != null && roomTilemap.gameObject.scene == installedScene)
+                roomTilemap.width = originalTilemapWidth;
+            roomTilemap = null;
+            originalTilemapWidth = 0;
+            tilemapWidthCaptured = false;
+        }
+
+        private static void RestoreCameraBounds()
+        {
+            if (!boundsCaptured) return;
+            if (camera != null && camera.tilemap != null && camera.tilemap.gameObject.scene == installedScene)
+            {
+                camera.sceneWidth = oldSceneWidth;
+                camera.xLimit = oldXLimit;
+            }
+            if (gameManager != null && gameManager.tilemap != null && gameManager.tilemap.gameObject.scene == installedScene)
+                gameManager.sceneWidth = oldGameSceneWidth;
+        }
+
         internal static void Cleanup(bool returnPlayer)
         {
+            returnCameraRecoveryToken++;
             if (returnPlayer && installed && open)
             {
                 HeroController hero = HeroController.instance;
@@ -1063,9 +1255,8 @@ namespace OrbRadiance
             }
             StopAmbientParticles();
             if (roomRoot != null) roomRoot.SetActive(false);
-            bool stillActive = installedScene == UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-            if (stillActive && boundsCaptured && camera != null) { camera.sceneWidth = oldSceneWidth; camera.xLimit = oldXLimit; }
-            if (stillActive && boundsCaptured && gameManager != null) gameManager.sceneWidth = oldGameSceneWidth;
+            RestoreTilemapWidth();
+            RestoreCameraBounds();
             if (terrain != null) terrain.Restore(); terrain = null;
             foreach (UnityEngine.Object item in owned)
             {

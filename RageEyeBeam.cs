@@ -8,7 +8,7 @@ using UnityEngine;
 namespace OrbRadiance
 {
     // 无限剑雨阶段 HARD 额外持续发射眼激光，其他难度不启用。
-    // 私有光束复用原版预制体，在转阶段和组件销毁时清理。
+    // 触发并驱动原版 Attack Commands 的 RAGE EYES 链及 Burst 1/2/3；转阶段或组件销毁时收束。
 
 
     internal class RageEyeBeam : MonoBehaviour

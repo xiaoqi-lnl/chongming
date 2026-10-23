@@ -12,10 +12,9 @@ namespace OrbRadiance
         // 场地计时器和虚空相位闩锁要重新进一次战斗才会重新武装。
         public bool Enabled = true;
 
-        // hard 难度总开关（照天国余晖 RadianceBossSettings.HardMode）：true = hard，false = 普通（默认）。
-        // 只有 P2 光墙挂在它下面：普通 = 双墙（BeamSweeperDual.cs，两墙从 x=61 向两边走）；
-        // hard = 随机位置预警柱 + 齐射（HardBeamWall.cs，同时抑制原版横扫墙）。
-        // 注意 P1 光墙在两种难度下都是双墙（HardBeamWall 只改 P2）。和其它改动一样，进战斗时生效。
+        // 未通过雕像选择模式时使用的持久化难度回退：true = H，false = N。已选雕像时由当前战斗模式覆盖。
+        // 有效难度会影响多项机制；P2 光墙只是其中一项：N 使用双墙，H 使用随机预警墙（见 BeamSweeperDual.cs / HardBeamWall.cs）。
+        // P1 双墙的速度倍率为 Z=1、N=1.5、H=2。
         public bool HardMode = false;
     }
 }

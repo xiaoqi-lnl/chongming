@@ -10,10 +10,10 @@ namespace OrbRadiance
 
     internal static class P2CombPatch
     {
-        private const float RiseX = 60.5f;         // 场地中线（内边界 48.2233 / 72.9484 的中点）
-        private const float RiseY = 31f;           // 前两波生成高度
-        private const float FallY = 80f;           // 第三波下落起点
-        private const float FallRotation = 180f;   // 第三波朝向（自身 +Y = 世界 −Y → 往下掉）
+        private const float RiseX = 60.5f;         // L2/R2 上行波的横向基准 X
+        private const float RiseY = 31f;           // L2/R2 上行波生成高度
+        private const float FallY = 80f;           // Top2 下行波起点
+        private const float FallRotation = 180f;   // Top2 朝向（自身 +Y = 世界 −Y → 往下掉）
         private const float NailSpeedScale = 1.8f; // 横刺速度倍率（原版 1 倍）
         private const float SpawnXJitter = 5f;     // 每波生成 x 的随机抖动幅度（±，世界单位）2026-10-05 用户定
 
@@ -48,7 +48,7 @@ namespace OrbRadiance
             {
                 if (a is SetPosition sp)
                 {
-                    // x 每次 Patch 现取随机（Patch 每波重跑，见类头 4)）；y 是固定值
+                    // x 每次 Patch 现取随机；y 使用固定值
                     if (sp.x != null && !sp.x.IsNone)
                     { Set(sp.x, x + UnityEngine.Random.Range(-SpawnXJitter, SpawnXJitter)); moved = true; }
                     if (sp.y != null && !sp.y.IsNone) { Set(sp.y, y); moved = true; }

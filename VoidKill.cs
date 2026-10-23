@@ -38,14 +38,14 @@ namespace OrbRadiance
         // 虚空/地刺走 2(SPIKES)/3(ACID)/4(LAVA)/5(PIT)。
         private const int HazardTypeNormal = 1;
 
-        // P1 地板刺 + §10 克隆出来的 P2 高位刺都挂在这个父物体下（判「这次伤害是不是地刺给的」）
+        // 原生 P1 地板刺和克隆 P2 高位刺通过 Spike Control 路径识别；H P2 旋转平台刺另用 HOrbPlatformSpike 标记。
         private const string SpikePath = "Boss Control/Spike Control";
 
         // 由 Update 维护，OnTakeDamage 是静态 hook，只能读静态字段
         internal static bool KillActive;
 
-        // 这次受击是不是地刺给的（On.HeroController.TakeDamage 记录）。地刺放行正常伤害，
-        // 其余 hazardType != 1 的一律当掉虚空 → 9999（照天国余晖）。
+        // 这次受击是不是地刺给的（On.HeroController.TakeDamage 记录）。地刺放行原伤害；
+        // 其他非普通伤害在 H 改为 9999、N 改为 2、Z/EASY 改为 1（飞剑另有豁免）。
         private static bool lastDamageIsSpike;
 
         // 这次受击是不是本 mod 自己生成的 P2 飞剑给的（认 NailProjectile 标记）。
@@ -126,7 +126,7 @@ namespace OrbRadiance
             if (!OrbRadiance.Settings.Enabled || damage <= 0) return damage;
             if (hazardType == HazardTypeNormal || !KillActive) return damage;
             if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != SceneName) return damage;
-            // 地刺照常扣血（P1 地板那排 / P2 高位那排都在 Spike Control 下），其余当掉虚空
+            // 原生地刺由 Spike Control 路径、H P2 旋转平台刺由 HOrbPlatformSpike 标记识别；其他非普通伤害按难度改写
             if (lastDamageIsSpike) return damage;
             // 本 mod 自己的 P2 飞剑（hazardType 0 的不可挡直伤）放行，别当掉虚空
             if (lastDamageIsNail) return damage;
@@ -148,10 +148,11 @@ namespace OrbRadiance
             return false;
         }
 
-        // 判「这次伤害是不是地刺给的」：来源在 Spike Control 下（含 P1 地板那排与 P2 高位那排）
+        // 判「这次伤害是不是地刺给的」：查 Spike Control 下原生/克隆刺，或 HOrbPlatformSpike 专属标记
         private static bool IsSpike(GameObject go)
         {
             if (go == null) return false;
+            if (go.GetComponentInParent<HOrbPlatformSpike>() != null) return true;
             Transform t = go.transform;
             if (spikeRoot == null)
             {

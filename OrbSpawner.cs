@@ -83,6 +83,7 @@ namespace OrbRadiance
 
             if (changed && cur == "Orbs")
             {
+                P2OrbPlatforms.TrySpawnAtOrbAttack(gameObject);
                 string mode;
                 string countPolicy;
                 if (OrbRadiance.EffectiveHardMode)

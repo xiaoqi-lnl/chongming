@@ -38,7 +38,7 @@ namespace OrbRadiance
         // ---------------- 用户参数（2026-10-08 定；要调就改这里）----------------
 
         private const int MinCount = 6;              // 一次几道（下限）
-        private const int MaxCount = 10;             // 一次几道（上限），实际 Random(MinCount, MaxCount)
+        private const int MaxCount = 10;             // 一次几道（含上限；Random 使用 MaxCount + 1）
         private const float WarnTime = 1f;           // 预警（ANTIC 蓄力）到开火
         private const float FireTime = 0.7f;         // 开火（FIRE）持续
         private const float EndFade = 0.5f;          // END 之后等 "Beam End" 淡出再销毁
@@ -148,7 +148,7 @@ namespace OrbRadiance
             // 招式触发不在这里逐帧采样（见 Subscribe 的注释），改由 StateChanged 回调
 
             // 看门狗：协程若被异常中断，running 会卡住不清 → 整套 hard 光墙永久废掉、
-            // 克隆梁也烂在场上。超时强拆兜底（正常一趟 ~3.2s，MaxRunTime 远大于它）
+            // 克隆梁也烂在场上。正常预警、开火与收尾共 2.2s，另有克隆FSM启动等待；MaxRunTime 是兜底上限。
             if (running != null && Time.time - runStart > MaxRunTime)
             {
                 OrbRadiance.Instance.LogWarn("OrbRadiance: [hardbeam] 一趟超时，强制收尾");
@@ -161,7 +161,7 @@ namespace OrbRadiance
         private void Begin()
         {
             if (!ResolveTemplate()) return;
-            // 上一趟还没放完（这招最短可 2.0s 一次，比一趟 2.2s 还快）→ 直接顶掉重放，
+            // 上一趟还没放完（招式最短约 2.0s 一次，比预警、开火、收尾固定共 2.2s 更快；另有启动等待）→ 直接顶掉重放，
             // 保证「每出一次这招就有一套墙」，而不是隔一次才有一套
             runGeneration++;
             int ticket = runGeneration;

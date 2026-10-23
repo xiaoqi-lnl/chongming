@@ -9,21 +9,48 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
+    public sealed class OrbRadianceLocalSettings
+    {
+        public bool HiddenRoomWallBroken { get; set; }
+    }
+
     // 重明 Mod 入口：注册攻击组件、统一难度分流，并保留关闭时恢复原版行为的逻辑。
     // 光球追踪寿命与碰撞行为由对应组件修改，P4 光球时序单独处理。
 
 
-    public class OrbRadiance : Mod, IGlobalSettings<OrbRadianceSettings>, IMenuMod
+    public class OrbRadiance : Mod, IGlobalSettings<OrbRadianceSettings>, ILocalSettings<OrbRadianceLocalSettings>, IMenuMod
     {
         internal static OrbRadiance Instance;
 
         internal static OrbRadianceSettings Settings = new OrbRadianceSettings();
+        internal static OrbRadianceLocalSettings LocalSettings = new OrbRadianceLocalSettings();
 
         // ---------------- 总开关 ----------------
 
         public void OnLoadGlobal(OrbRadianceSettings s) => Settings = s ?? new OrbRadianceSettings();
 
         public OrbRadianceSettings OnSaveGlobal() => Settings;
+
+        public OrbRadianceLocalSettings OnSaveLocal() => LocalSettings ?? new OrbRadianceLocalSettings();
+
+        public void OnLoadLocal(OrbRadianceLocalSettings settings)
+        {
+            LocalSettings = settings ?? new OrbRadianceLocalSettings();
+            Log("HiddenRoom: 当前档已载入隐藏墙状态 broken=" + LocalSettings.HiddenRoomWallBroken);
+        }
+
+        private void OnGameManagerLoadGame(On.GameManager.orig_LoadGame orig, GameManager self, int saveSlot, Action<bool> callback)
+        {
+            LocalSettings = new OrbRadianceLocalSettings();
+            LogDebug("HiddenRoom: 开始载入存档槽 " + saveSlot + "，先重置本地隐藏墙状态");
+            orig(self, saveSlot, callback);
+        }
+
+        private void OnNewGame()
+        {
+            LocalSettings = new OrbRadianceLocalSettings();
+            Log("HiddenRoom: 新游戏已清除本地隐藏墙状态");
+        }
 
         public bool ToggleButtonInsideMenu => true;
 
@@ -94,14 +121,14 @@ namespace OrbRadiance
         // 撞到地形（层 8 Terrain）是否引爆
         internal const bool BurstOnTerrainHit = false;
 
-        // 入场动画播完（Control FSM 进入 Battle Start）后，隔多少秒移除 P1 场地。
+        // H 难度入场动画播完（Control FSM 进入 Battle Start）后，隔多久开始移除 P1 场地。
         // 这只是「最早可能撤的时刻」：实际还要等地刺立起来（见 ArenaSpikes.GroundReady），
         // 撤除发生在 1.5s 与「24 根刺进 Up」两者都满足时 —— 后者约 2.3~2.7s。
         internal const float FloorRemoveDelay = 1.5f;
 
         // Attack Choices 的 Orb Recover 硬直（原版 0.5）。
         // 球招已经不走 Attack Commands（见 OrbSpawner），这段硬直失去了原本的用途，
-        // 只剩下「把下一招往后推」的副作用 —— 压到 0.05，下一招基本和第一个球同时接上。
+        // 只剩下「把下一招往后推」的副作用 —— 压到 0.01，缩短下一招的等待。
         
         // 不能设成 0：PlayMaker 的 Wait 在 time<=0 时走的是另一条分支
         // （Actions/Wait.cs OnEnter 里直接 Fsm.Event(finishEvent) 并结束），
@@ -110,8 +137,7 @@ namespace OrbRadiance
         
         internal const float OrbRecoverWait = 0.01f;
 
-        // P1 掉进场地下面的虚空时给的伤害，顶掉原版的「扣 1 血 + 送回场地」。
-        // 低难度下 TakeDamage 拿到的虚空伤害只有 1，这里在出口直接顶成致死值（见 VoidKill）
+        // H 难度 P1 至 P4 开始前的虚空伤害由 VoidKill 改为 9999；Z/EASY 为 1，N 为 2。
         internal const int VoidKillDamage = 9999;
 
         // 垂直剑阵（Nail Top Sweep）改成从下往上飞：见 NailTopSweep.cs
@@ -138,6 +164,7 @@ namespace OrbRadiance
             var names = base.GetPreloadNames() ?? new List<ValueTuple<string, string>>();
             foreach (string path in WorkshopRoomAssets.RequiredPaths)
                 names.Add(ValueTuple.Create("GG_Workshop", path));
+            names.Add(ValueTuple.Create("GG_Atrium", BluePhaseBindingAudio.InspectPath));
             return names;
         }
 
@@ -152,11 +179,14 @@ namespace OrbRadiance
 
         public override void Initialize(Dictionary<string, Dictionary<string, GameObject>> preloadedObjects)
         {
+            On.GameManager.LoadGame += OnGameManagerLoadGame;
+            ModHooks.NewGameHook += OnNewGame;
             On.PlayMakerFSM.OnEnable += OnFsmEnable;
             On.HeroController.TakeDamage += VoidKill.OnHeroTakeDamage;
             ModHooks.TakeDamageHook += VoidKill.OnTakeDamage;
             ModHooks.LanguageGetHook += OnLangGet;
             WorkshopRoomAssets.Configure(preloadedObjects, LogWarn);
+            BluePhaseBindingAudio.Configure(preloadedObjects, LogWarn);
             WorkshopStatueLifecycle.Initialize();
             WorkshopHiddenRoom.Install();
 
@@ -192,7 +222,7 @@ namespace OrbRadiance
                         self.gameObject.AddComponent<P4OrbInterval>().Init(self);
 
                     // 球招并行：把 Orbs 发的事件改名（Attack Commands 不认识 → 不跑球循环），
-                    // 由 OrbSpawner 自己按原版节奏放球；boss 同时能接下一招
+                    // 由 OrbSpawner 按自定义蓄力/间隔放球；boss 同时能接下一招
                     if (self.FsmName == "Attack Choices")
                     {
                         if (Settings.Enabled)
@@ -232,7 +262,7 @@ namespace OrbRadiance
                     return;
                 }
 
-                // 竞技场控制 FSM：只挂计时器 + 换报幕贴图，不动它状态流转
+                // 竞技场控制 FSM：只挂 P1 场地计时器与地刺管理，不改状态流转
                 if (self.FsmName == "Control" && self.gameObject.name == "Boss Control")
                 {
                     if (self.gameObject.GetComponent<ArenaFloor>() == null)
@@ -244,17 +274,17 @@ namespace OrbRadiance
                     return;
                 }
 
-                // 辐光本体：挂相位监视器，只读 ActiveStateName，供虚空 9999 判断是否在 P1
+                // 辐光本体：挂相位监视器，只读 ActiveStateName，按难度调整 P1 至 P4 开始前的虚空伤害
                 if (self.FsmName == "Control" && self.gameObject.name == "Absolute Radiance")
                 {
                     if (self.gameObject.GetComponent<VoidKill>() == null)
                         self.gameObject.AddComponent<VoidKill>().Init(self);
 
-                    // P2：NORMAL 留原平台、HARD 拆平台并持续射飞剑（自己看总开关，所以无条件挂）
+                    // P2：Z/N 保留原平台；H 拆除 P2 平台并持续射飞剑（自己看总开关，所以无条件挂）
                     if (self.gameObject.GetComponent<P2NailStream>() == null)
                         self.gameObject.AddComponent<P2NailStream>().Init(self);
 
-                    // P3：玩家头顶放脸刺（照天国余晖；自己看总开关）
+                    // H P3 在玩家下方 30 单位、X±10 范围生成五圈剑刺（自己看总开关）
                     if (self.gameObject.GetComponent<P3NailFan>() == null)
                         self.gameObject.AddComponent<P3NailFan>().Init(self);
 
@@ -265,6 +295,10 @@ namespace OrbRadiance
                     // NORMAL P2 的七块原生平台周期开出独立私有地刺；不复用原五组FSM池。
                     if (self.gameObject.GetComponent<P2PlatformSpikes>() == null)
                         self.gameObject.AddComponent<P2PlatformSpikes>().Init(self);
+
+                    // H P2：每次 Orbs 招式尝试生成固定时长的私有旋转平台与平台地刺；已有未到期的一对时不新增或续时。
+                    if (self.gameObject.GetComponent<P2OrbPlatforms>() == null)
+                        self.gameObject.AddComponent<P2OrbPlatforms>().Init(self);
 
                     // N/Z P3 平台地刺：每个平台 9 根私有原版刺，H 不启用。
                     if (self.gameObject.GetComponent<P3PlatformSpikes>() == null)
@@ -279,19 +313,31 @@ namespace OrbRadiance
                     if (self.gameObject.GetComponent<P3HardTripleBeam>() == null)
                         self.gameObject.AddComponent<P3HardTripleBeam>().Init(self);
 
+                    // N/H P3：用世界坐标匀速抬升原虚空；P4 开始交回原生 Pit FSM。
+                    if (self.gameObject.GetComponent<P3RisingVoid>() == null)
+                        self.gameObject.AddComponent<P3RisingVoid>().Init(self);
+
+                    // H 难度 P2.5：蓝调正常进入 P3 时用 2 秒淡出恢复原色；死亡、重开或关闭 MOD 时立即恢复。
+                    if (self.gameObject.GetComponent<BluePhaseTint>() == null)
+                        self.gameObject.AddComponent<BluePhaseTint>().Init(self);
+
+                    // H 蓝调计时从阶段开始累计：10/20/30/40 秒依次施加四种临时束缚，护符锁生效满 5 秒（约第 45 秒）生成独立永久光球。
+                    if (self.gameObject.GetComponent<BluePhaseBindings>() == null)
+                        self.gameObject.AddComponent<BluePhaseBindings>().Init(self);
+
                     // 2026-10-15 用户实测要求暂时停用 N P3 上行雨；保留实现文件供后续恢复。
                     // if (self.gameObject.GetComponent<P3UpwardRain>() == null)
                     //     self.gameObject.AddComponent<P3UpwardRain>().Init(self);
 
-                    // 无限剑雨阶段放眼激光（自己看总开关）
+                    // H 无限剑雨阶段驱动原版眼激光链（组件自行检查难度和总开关）
                     if (self.gameObject.GetComponent<RageEyeBeam>() == null)
                         self.gameObject.AddComponent<RageEyeBeam>().Init(self);
 
-                    // P2 脸刺起手时朝首扇中心补射一道脸激光（自己看总开关）
+                    // H P2 每扇发一束原版光束及 5 束私有反向光束；N/Z 每枚脸刺配一束私有同步光束
                     if (self.gameObject.GetComponent<FanEyeBeam>() == null)
                         self.gameObject.AddComponent<FanEyeBeam>().Init(self);
 
-                    // 眼激光招式改成追踪激光：P1/P2 都改，一次一道、追着小骑士（自己看总开关）
+                    // P1/P2 眼激光招式改为每招 3 发、每发一束的追踪激光（预瞄参数见 EyeBeamTrack；自己看总开关）
                     if (self.gameObject.GetComponent<EyeBeamTrack>() == null)
                         self.gameObject.AddComponent<EyeBeamTrack>().Init(self);
 
@@ -301,11 +347,11 @@ namespace OrbRadiance
                         self.gameObject.GetComponent<HardBeamWall>() == null)
                         self.gameObject.AddComponent<HardBeamWall>().Init(self);
 
-                    // P2 脸刺改成 5 圈×24 剑环（照搬天国余晖；P1 脸刺不受影响，自己看总开关）
+                    // P2 脸刺按难度改发射模式：Z 为 1 轮×4 枚，N 为 3 轮×6 枚，H 为 5 扇面×8 枚（见 P2NailFanRing；自己看总开关）
                     if (self.gameObject.GetComponent<P2NailFanRing>() == null)
                         self.gameObject.AddComponent<P2NailFanRing>().Init(self);
 
-                    // P1 脸刺改成 ANY1 同款（P2 期间让位给 P2NailFanRing，自己看总开关）
+                    // P1 脸刺：Z/EASY 为 ANY1 式 3 圈×12 枚，N/H 为 10 枚轨道钉（P2 期间让位给 P2NailFanRing）
                     if (self.gameObject.GetComponent<P1NailFan>() == null)
                         self.gameObject.AddComponent<P1NailFan>();
 
@@ -349,8 +395,8 @@ namespace OrbRadiance
                 }
 
                 // 梁扫（光墙）：克隆一块镜像发射器，两堵墙都从 x=61 向两边走（见 BeamSweeperDual）
-                // 两种难度都挂：P1 的 L/R 双墙 N/H 一致；P2 的 L 2/R 2 在 hard 下广播已被
-                // HardBeamWall 改名抑制 → 双墙那部分自动空转，P2 走 HardBeamWall 的随机预警墙
+                // 三种难度都挂：P1 双墙速度倍率 Z=1、N=1.5、H=2；P2 的 L 2/R 2 在 H 下广播被
+                // HardBeamWall 改名抑制，双墙自动空转并改走随机预警墙
                 if (self.FsmName == "Control" && self.gameObject.name == "Beam Sweeper")
                 {
                     if (self.gameObject.GetComponent<BeamSweeperDual>() == null)
@@ -377,6 +423,7 @@ namespace OrbRadiance
 
                 if (self.FsmName != "Orb Control") return;
                 if (!Settings.Enabled) return;
+                if (BluePhaseBindings.IsPermanentOrb(self.gameObject)) return;
                 Patch(self.Fsm);            }
             catch (Exception e)
             {
@@ -505,12 +552,16 @@ namespace OrbRadiance
         // 关开关时把动过的字段写回原值。销毁过的对象（Unity 假 null）跳过，不硬编原版数值。
         private static void RestorePatched()
         {
+            P3RisingVoid.RestoreAll();
+            P2OrbPlatforms.RestoreAll();
+            BluePhaseBindings.RestoreAll();
             WorkshopHiddenRoom.Cleanup(true);
             BossHP.Restore();
             RageRain.Restore();
             P3Laser.Restore();
             P3TrackingBeam.Restore();
             P3HardTripleBeam.Restore();
+            BluePhaseTint.Restore();
             P3PlatformSpikes.Restore();
             P4OrbInterval.Restore();
             foreach (KeyValuePair<Wait, float> kv in OriginalWait)

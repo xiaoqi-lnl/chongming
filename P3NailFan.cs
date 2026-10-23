@@ -24,7 +24,7 @@ namespace OrbRadiance
 
         // ---------------- 圆心（相对玩家，用户 2026-10-06 定）----------------
 
-        private const float CenterUpY = -30f;        // 玩家底下 40 个单位
+        private const float CenterUpY = -30f;        // 玩家底下 30 个单位
         private const float CenterXJitter = 10f;    // X = 玩家当前 X ± 10
 
         // ---------------- 剑环参数（照天国余晖 P2 / ANY2）----------------
@@ -39,11 +39,11 @@ namespace OrbRadiance
         private const float RingInterval = 0.01f;   // 圈间铺圈间隔（`CW/CCW Restart` 的 Wait，原版禁用）
         private const float FanDelay = 0.3f;        // 整圈铺完 → `FAN ATTACK` 的延迟（`CW/CCW Fire` 的 delay）
 
-        // 发射节奏（与铺圈速度解耦）：相邻两圈固定隔这么久发射，不随帧率/铺圈快慢漂移。
+        // 发射节奏：相邻两圈至少间隔 WaveInterval；若本圈铺设较慢，实际发射时点会顺延。
         private const float WaveInterval = 0.25f;
 
         // 钉子飞行时长（`Fire CW/CCW` 的 `Wait`，原版 2s）。拉长让钉子飞更久、够玩家下劈；
-        // 注意同一状态每帧 `Angle ∓= 30°/s`，时长越长卷得越厉害（2s≈60°、4s≈120°）。
+        // 转向速率由 TurnRate 决定（当前 27.6°/s；2s≈55.2°，4s≈110.4°）。
         //用户改了
         private const float NailLifetime = 4f;
 
@@ -189,7 +189,7 @@ namespace OrbRadiance
 
         // ---------------- 一轮剑环 ----------------
 
-        // 一轮铺完立刻接下一轮（用户 2026-10-06 定）。钉子自己 2s 后回收，不等。
+        // 一轮铺完立刻接下一轮（用户 2026-10-06 定）。钉子飞行段由 NailLifetime 的 Wait 控制，当前为 4s。
         private IEnumerator Loop()
         {
             while (true)

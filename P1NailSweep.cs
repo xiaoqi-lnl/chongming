@@ -8,8 +8,8 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // P1 横刺分流：Z/N 使用双侧原版移动剑墙；H 使用双侧追踪发射的独立剑刺。
-    // 保留原版剑刺碰撞与伤害逻辑，控制成组间距、方向和结束窗口。
+    // P1 横刺按难度分流：Z/N 使用双侧原版移动剑墙；H 发射双侧独立追踪剑刺。
+    // 保留外观与排布，私有剑刺按当前分支配置碰撞和伤害。
 
 
     internal class P1NailSweep : MonoBehaviour
@@ -466,7 +466,7 @@ namespace OrbRadiance
             into.Clear();
 
             float top = y + (NailsPerWall - 1) * 0.5f * NailSpacing;
-            // 钉子贴图沿本地 +Y 指（见 NailTopSweep.cs）→ 转 -90° 朝世界 +X（右墙朝场地内），+90° 朝 -X（左墙）。
+            // 钉子贴图沿本地 +Y 指（见 NailTopSweep.cs）；左墙转 -90° 朝世界 +X，右墙转 +90° 朝世界 -X。
             float zRot = faceRight ? -90f : 90f;
 
             for (int i = 0; i < NailsPerWall; i++)
