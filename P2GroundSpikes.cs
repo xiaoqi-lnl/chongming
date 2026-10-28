@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using HutongGames.PlayMaker;
@@ -6,77 +7,124 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // HARD P2 在 y=33 额外生成一排私有地刺，不移动 P1 原有地刺。
-    // P2 离开或 Mod 关闭时销毁新增对象。
-
-
-    internal class P2GroundSpikes : MonoBehaviour
+    // H P2 高位地刺：P1 分帧克隆原版 5 组，藏在未激活的暂存根对象下。
+    // 进入 P2 时只改父节点并启用，保留原版 UP / SPIKES DOWN 行为。
+    internal sealed class P2GroundSpikes : MonoBehaviour
     {
-        // ---------------- 时间点（状态名，与 P2NailStream 同一套）----------------
-
         private const string StateStart = "Arena 2 Start";
         private const string StateStop = "Ascend Tele";
-
-        private static readonly string[] ResetStates =
-            { "Battle Start", "Refight", "Init", "Setup" };
-
-        private const string ArenaFsmOwner = "Boss Control";
-
-        // ---------------- 地刺 ----------------
-
+        private const string StateP4 = "Scream";
         private const string SpikePath = "Boss Control/Spike Control";
-
-        // 五个地面组容器名（原版），克隆的就是它们各自整棵子树
-        private static readonly string[] Groups =
-            { "Centre", "Mid L", "Mid R", "Far L", "Far R" };
-
-        // 单根刺在组内的高低：组容器在 world (0,0,0)，刺 local y = 21.18
-        private const float SpikeLocalY = 21.18f;
-
-        // 用户定的目标高度：整根刺的 world y = 33
-        private const float TargetWorldY = 33f;
-
-        // 克隆体名字后缀，用来和原版那 5 个组区分（FindChild 按名字找的是原版，不会撞）
-        private const string CloneSuffix = " (P2 33)";
-
+        private const string ArenaFsmOwner = "Boss Control";
         private const string SpikeFsmName = "Control";
+        private const float SpikeLocalY = 21.18f;
+        private const float TargetWorldY = 33f;
+        private const string CloneSuffix = " (P2 33)";
+        private const float RetrySeconds = 1f;
 
-        // ---------------- 运行时 ----------------
+        private static readonly string[] Groups = { "Centre", "Mid L", "Mid R", "Far L", "Far R" };
+        private static readonly string[] ResetStates = { "Battle Start", "Refight", "Init", "Setup" };
+        private static readonly HashSet<P2GroundSpikes> ActiveInstances = new HashSet<P2GroundSpikes>();
 
-        private PlayMakerFSM control;               
-
-        private PlayMakerFSM arenaFsm;              // Boss Control/Control：重打复位
+        private PlayMakerFSM control;
+        private PlayMakerFSM arenaFsm;
         private bool arenaTried;
+        private bool subscribed;
+        private bool arenaSubscribed;
         private string lastArenaState;
-
+        private string lastState;
+        private GameObject stagingRoot;
+        private Transform sourceRoot;
+        private Coroutine prewarmRoutine;
+        private bool prewarmReady;
+        private bool pendingActivation;
+        private bool activated;
+        private bool phaseFinished;
+        private float nextRetry;
+        private int prewarmIndex;
         private readonly List<GameObject> clones = new List<GameObject>();
         private readonly List<PlayMakerFSM> cloneFsms = new List<PlayMakerFSM>();
-        private string lastState;
 
-        internal void Init(PlayMakerFSM f)
+        internal void Init(PlayMakerFSM fsm)
         {
-            control = f;
+            control = fsm;
+            ActiveInstances.Add(this);
+            lastState = control != null && control.Fsm != null ? control.Fsm.ActiveStateName : null;
+            lastArenaState = ArenaState();
+            Subscribe();
+            HandleState(lastState);
+        }
+
+        private void OnEnable() { Subscribe(); }
+
+        private void Subscribe()
+        {
+            if (!subscribed && control != null && control.Fsm != null)
+            {
+                control.Fsm.StateChanged += OnStateChanged;
+                subscribed = true;
+            }
+            ArenaState();
+            if (!arenaSubscribed && arenaFsm != null && arenaFsm.Fsm != null)
+            {
+                arenaFsm.Fsm.StateChanged += OnArenaStateChanged;
+                arenaSubscribed = true;
+            }
+        }
+
+        private void OnDisable()
+        {
+            if (subscribed && control != null && control.Fsm != null)
+                control.Fsm.StateChanged -= OnStateChanged;
+            subscribed = false;
+            if (arenaSubscribed && arenaFsm != null && arenaFsm.Fsm != null)
+                arenaFsm.Fsm.StateChanged -= OnArenaStateChanged;
+            arenaSubscribed = false;
+            Remove();
+        }
+
+        private void OnDestroy()
+        {
+            OnDisable();
+            ActiveInstances.Remove(this);
+        }
+
+        internal static void RestoreAll()
+        {
+            foreach (P2GroundSpikes instance in ActiveInstances.ToArray())
+            {
+                if (instance == null) continue;
+                instance.Remove();
+            }
+        }
+
+        private void OnStateChanged(FsmState state)
+        {
+            if (state == null) return;
+            lastState = state.Name;
+            HandleState(state.Name);
+        }
+
+        private void OnArenaStateChanged(FsmState state)
+        {
+            if (state == null) return;
+            lastArenaState = state.Name;
+            if (ResetStates.Contains(state.Name)) ResetForFight();
         }
 
         private void Update()
         {
             if (control == null || control.Fsm == null) return;
-
-            // NORMAL / EASY 使用原版 7 平台，不造或驱动 worldY=33 的克隆刺。
-            if (!OrbRadiance.EffectiveHardMode)
+            if (!OrbRadiance.Settings.Enabled || !OrbRadiance.EffectiveHardMode)
             {
                 Remove();
-                lastState = control.Fsm.ActiveStateName;
-                lastArenaState = null;
                 return;
             }
-
-            // 总开关关掉：拆掉克隆体（原版那排不受影响）
-            if (!OrbRadiance.Settings.Enabled)
+            HeroController hero = HeroController.instance;
+            if (hero != null && hero.cState.dead)
             {
                 Remove();
-                lastState = null;
-                lastArenaState = null;
+                phaseFinished = true;
                 return;
             }
 
@@ -84,107 +132,158 @@ namespace OrbRadiance
             if (arena != null && arena != lastArenaState)
             {
                 lastArenaState = arena;
-                if (ResetStates.Contains(arena)) Remove();
+                if (ResetStates.Contains(arena)) ResetForFight();
             }
-
-            string cur = control.Fsm.ActiveStateName;
-            if (cur != lastState)
+            string state = control.Fsm.ActiveStateName;
+            if (state != lastState)
             {
-                lastState = cur;
-
-                if (cur == StateStart) Build();
-                else if (cur == StateStop) Remove();
+                lastState = state;
+                HandleState(state);
             }
 
-            // 每帧补 UP：克隆体自己走 Init → Downed，被 SPIKES DOWN 打落后也要靠这个重新升起
-            if (clones.Count > 0) PushUp();
+            // 只在真正结束当前战斗前预热；找不到原版组时保守地延迟重试。
+            if (!prewarmReady && !phaseFinished && stagingRoot == null && prewarmRoutine == null &&
+                Time.time >= nextRetry)
+            {
+                nextRetry = Time.time + RetrySeconds;
+                BeginPrewarm();
+            }
+            if (pendingActivation && prewarmReady && !phaseFinished) Activate();
+            if (activated) PushUp();
         }
 
-        // ---------------- 造 / 拆 ----------------
-
-        private void Build()
+        private void HandleState(string state)
         {
-            Remove();
-
-            GameObject root = GameObject.Find(SpikePath);
-            if (root == null)
+            if (state == StateStart)
             {
-                OrbRadiance.Instance.LogWarn("OrbRadiance: 找不到 " + SpikePath + "，P2 高位地刺没造");
-                return;
+                phaseFinished = false;
+                pendingActivation = true;
+                if (prewarmReady) Activate();
             }
-
-            float groupY = TargetWorldY - SpikeLocalY;
-
-            int made = 0;
-            foreach (string name in Groups)
+            else if (state == StateStop || state == StateP4)
             {
-                Transform g = root.transform.Find(name);
-                if (g == null)
-                {
-                    OrbRadiance.Instance.LogWarn("OrbRadiance: " + SpikePath + " 下没有 " + name +
-                                                 " 组，这一处高台刺没造");
-                    continue;
-                }
+                phaseFinished = true;
+                Remove();
+            }
+        }
 
-                GameObject clone;
+        private void BeginPrewarm()
+        {
+            GameObject root = GameObject.Find(SpikePath);
+            if (root == null) return;
+            sourceRoot = root.transform;
+            // 先确定全部 5 个源组都存在；避免缺组时制造不可预测的半排刺。
+            foreach (string name in Groups)
+                if (sourceRoot.Find(name) == null) return;
+
+            stagingRoot = new GameObject("H P2 high spikes prewarm staging");
+            stagingRoot.transform.SetParent(sourceRoot, false);
+            stagingRoot.transform.localPosition = Vector3.zero;
+            stagingRoot.transform.localRotation = Quaternion.identity;
+            stagingRoot.transform.localScale = Vector3.one;
+            stagingRoot.SetActive(false);
+            prewarmIndex = 0;
+            prewarmRoutine = StartCoroutine(PrewarmGroups());
+        }
+
+        private IEnumerator PrewarmGroups()
+        {
+            while (stagingRoot != null && prewarmIndex < Groups.Length)
+            {
+                string name = Groups[prewarmIndex];
+                Transform original = sourceRoot != null ? sourceRoot.Find(name) : null;
+                bool failed = false;
                 try
                 {
-                    clone = Instantiate(g.gameObject, root.transform);
+                    if (original == null) throw new InvalidOperationException("Missing original spike group " + name);
+                    GameObject clone = Instantiate(original.gameObject, stagingRoot.transform);
+                    if (clone == null) throw new InvalidOperationException("Instantiate returned null for " + name);
+                    clones.Add(clone); // 配置失败时也能销毁这棵子树。
+                    clone.SetActive(false);
+                    clone.name = name + CloneSuffix;
+                    // 原版组可能已经下沉；P2 高度仍应采用确定的绝对赋值。
+                    clone.transform.localPosition = new Vector3(original.localPosition.x,
+                        TargetWorldY - SpikeLocalY, original.localPosition.z);
+                    PlayMakerFSM[] fsms = clone.GetComponentsInChildren<PlayMakerFSM>(true);
+                    for (int i = fsms.Length - 1; i >= 0; i--)
+                    {
+                        PlayMakerFSM fsm = fsms[i];
+                        if (fsm != null && fsm.Fsm != null && fsm.FsmName == SpikeFsmName)
+                            cloneFsms.Add(fsm);
+                    }
                 }
                 catch (Exception e)
                 {
-                    OrbRadiance.Instance.LogError("OrbRadiance: 克隆 " + name + " 抛异常 " + e);
-                    continue;
+                    OrbRadiance.Instance.LogWarn("[spikes] H P2 high spikes prewarm failed: " + e.Message);
+                    // 在协程外侧一次性移除，避免本帧继续制造不完整的组。
+                    prewarmRoutine = null;
+                    Remove();
+                    failed = true;
                 }
-                if (clone == null) continue;
-
-                clone.name = name + CloneSuffix;
-                // 绝对赋值（不是加法）：原组此刻可能已被 ArenaSpikes 下沉过
-                clone.transform.localPosition = new Vector3(g.localPosition.x, groupY, g.localPosition.z);
-                clone.SetActive(true);
-
-                PlayMakerFSM[] fsms = clone.GetComponentsInChildren<PlayMakerFSM>(true);
-                // PushUp 反向遍历缓存，所以每组逆序登记以保留原来的组内 UP 顺序。
-                for (int i = fsms.Length - 1; i >= 0; i--)
-                {
-                    PlayMakerFSM fsm = fsms[i];
-                    if (fsm != null && fsm.Fsm != null && fsm.FsmName == SpikeFsmName)
-                        cloneFsms.Add(fsm);
-                }
-
-                clones.Add(clone);
-                made++;
+                if (failed) yield break;
+                prewarmIndex++;
+                yield return null; // 每帧最多完整克隆一组，不在 P2 入口集中创建。
             }
+            if (stagingRoot == null || clones.Count != Groups.Length) yield break;
+            prewarmReady = true;
+            prewarmRoutine = null;
+            OrbRadiance.Instance.Log("[spikes] H P2 high spikes prewarm ready: " +
+                                     clones.Count + "/" + Groups.Length + " groups, waiting for P2");
+        }
 
-            OrbRadiance.Instance.Log("[spikes] P2 高位地刺已生成：克隆 " + made + "/" + Groups.Length +
-                                     " 组，刺 world y = " + TargetWorldY + "（组 local y " + groupY +
-                                     "）；P1 那排仍在 18.5");
+        private void Activate()
+        {
+            if (activated || !prewarmReady || sourceRoot == null || clones.Count != Groups.Length) return;
+            pendingActivation = false;
+            foreach (GameObject clone in clones)
+            {
+                if (clone == null) { Remove(); return; }
+                // 转回原版 Spike Control 的直接子节点，保持原生 FSM 所依赖的父子关系。
+                clone.SetActive(false);
+                clone.transform.SetParent(sourceRoot, true);
+                clone.SetActive(true);
+            }
+            if (stagingRoot != null) Destroy(stagingRoot);
+            stagingRoot = null;
+            activated = true;
+            OrbRadiance.Instance.Log("[spikes] H P2 high spikes activated: reused " + clones.Count +
+                                     " prewarmed groups at world y=" + TargetWorldY);
+        }
+
+        private void ResetForFight()
+        {
+            Remove();
+            phaseFinished = false;
+            nextRetry = 0f;
         }
 
         private void Remove()
         {
+            if (prewarmRoutine != null) StopCoroutine(prewarmRoutine);
+            prewarmRoutine = null;
+            pendingActivation = false;
+            prewarmReady = false;
+            activated = false;
+            prewarmIndex = 0;
             cloneFsms.Clear();
-            if (clones.Count == 0) return;
-
-            int n = 0;
-            foreach (GameObject c in clones)
+            foreach (GameObject clone in clones)
             {
-                if (c == null) continue;    // 场景卸载 / 已被销毁（Unity 假 null）
-                Destroy(c);
-                n++;
+                if (clone == null) continue;
+                clone.SetActive(false);
+                Destroy(clone);
             }
             clones.Clear();
-
-            if (n > 0) OrbRadiance.Instance.Log("[spikes] P2 高位地刺已拆 " + n + " 组");
+            if (stagingRoot != null)
+            {
+                stagingRoot.SetActive(false);
+                Destroy(stagingRoot);
+            }
+            stagingRoot = null;
+            sourceRoot = null;
         }
-
-        // ---------------- 升起 ----------------
 
         private void PushUp()
         {
-            for (int i = clones.Count - 1; i >= 0; i--)
-                if (clones[i] == null) clones.RemoveAt(i);
-
             for (int i = cloneFsms.Count - 1; i >= 0; i--)
             {
                 PlayMakerFSM fsm = cloneFsms[i];
@@ -193,8 +292,6 @@ namespace OrbRadiance
             }
         }
 
-        // ---------------- 重打复位 ----------------
-
         private string ArenaState()
         {
             if (!arenaTried)
@@ -202,16 +299,17 @@ namespace OrbRadiance
                 arenaTried = true;
                 Transform parent = transform.parent;
                 if (parent != null)
-                    foreach (PlayMakerFSM f in parent.GetComponents<PlayMakerFSM>())
-                        if (f != null && f.Fsm != null && f.FsmName == "Control") { arenaFsm = f; break; }
-
+                    foreach (PlayMakerFSM fsm in parent.GetComponents<PlayMakerFSM>())
+                        if (fsm != null && fsm.Fsm != null && fsm.FsmName == "Control")
+                        {
+                            arenaFsm = fsm;
+                            break;
+                        }
                 if (arenaFsm == null)
                     OrbRadiance.Instance.LogWarn("OrbRadiance: 找不到 " + ArenaFsmOwner +
-                                                 " 的 Control FSM，重打时 P2 高位地刺不会自动拆");
+                                                 " 的 Control FSM，无法通过父状态检测重战");
             }
-
-            if (arenaFsm == null || arenaFsm.Fsm == null) return null;
-            return arenaFsm.Fsm.ActiveStateName;
+            return arenaFsm != null && arenaFsm.Fsm != null ? arenaFsm.Fsm.ActiveStateName : null;
         }
     }
 }

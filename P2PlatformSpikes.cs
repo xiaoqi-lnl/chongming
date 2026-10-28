@@ -1,4 +1,6 @@
 using System;
+using System.Collections;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.Linq;
 using HutongGames.PlayMaker;
@@ -7,8 +9,8 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // NORMAL P2 每周期在 4 个平台生成 36 根私有原版地刺。
-    // Hero Saver 仅广播到平台自己的九刺组，不影响其他组或原版刺池。
+    // NORMAL P2 在 P1 分帧预创建 36 根原版私有地刺，P2 每 8 秒只复用并挪动这 4×9 根刺。
+    // Hero Saver 仅广播到对应的九刺组，不影响其他组或原版刺池。
     
     
     internal sealed class P2PlatformSpikes : MonoBehaviour
@@ -22,6 +24,10 @@ namespace OrbRadiance
         private const int SpikesPerPlatform = 9;
         private const int PlatformsPerCycle = 4;
         private const float AnticSeconds = 0.5f;
+        private const int PrewarmPerFrame = 2;
+        private const double PrewarmBudgetMilliseconds = 1.5;
+        private const float PrewarmRetrySeconds = 1f;
+        private static readonly HashSet<P2PlatformSpikes> ActiveInstances = new HashSet<P2PlatformSpikes>();
 
         private static readonly string[] PlatformPaths =
         {
@@ -50,7 +56,22 @@ namespace OrbRadiance
         private PlayMakerFSM templateControl;
         private float spikeBottomOffset;
         private float spikeHalfWidth;
-        private GameObject cycleRoot;
+        private GameObject poolRoot;
+        private Coroutine prewarmRoutine;
+        private bool poolReady;
+        private bool pendingStart;
+        private bool phaseFinished;
+        private float nextPrewarmAttempt;
+        private int prewarmCount;
+        private double prewarmTotalMs;
+        private double prewarmWorstBatchMs;
+        private int prewarmBatches;
+        private readonly GameObject[] poolGroups = new GameObject[PlatformsPerCycle];
+        private readonly List<PlayMakerFSM>[] poolControls =
+        {
+            new List<PlayMakerFSM>(), new List<PlayMakerFSM>(),
+            new List<PlayMakerFSM>(), new List<PlayMakerFSM>()
+        };
         private readonly List<PlayMakerFSM> cycleControls = new List<PlayMakerFSM>();
         private readonly HashSet<PlayMakerFSM> initialRiseSent = new HashSet<PlayMakerFSM>();
         private readonly HashSet<PlayMakerFSM> normalizedDown = new HashSet<PlayMakerFSM>();
@@ -58,6 +79,7 @@ namespace OrbRadiance
         internal void Init(PlayMakerFSM fsm)
         {
             control = fsm;
+            ActiveInstances.Add(this);
             if (control == null || control.Fsm == null) return;
 
             lastState = control.Fsm.ActiveStateName;
@@ -93,18 +115,31 @@ namespace OrbRadiance
                 arena.Fsm.StateChanged -= OnArenaStateChanged;
             arenaSubscribed = false;
             StopCycle();
+            DisposePool();
         }
 
         private void OnDestroy()
         {
             OnDisable();
+            ActiveInstances.Remove(this);
+        }
+
+        // MOD 中途关闭也立刻移除尚未进入 P2 的预创建刺，防止留在场景中。
+        internal static void RestoreAll()
+        {
+            foreach (P2PlatformSpikes instance in ActiveInstances.ToArray())
+            {
+                if (instance == null) continue;
+                instance.StopCycle();
+                instance.DisposePool();
+            }
         }
 
         private void OnStateChanged(FsmState state)
         {
             if (state == null) return;
             lastState = state.Name;
-            awaitingFreshP2Entry = false;
+            if (state.Name == StateStart) awaitingFreshP2Entry = false;
             HandleState(state.Name);
         }
 
@@ -116,6 +151,8 @@ namespace OrbRadiance
             awaitingFreshP2Entry = true;
             OrbRadiance.Instance.Log("[spikes] NORMAL P2 cycle reset by parent state event: " + state.Name);
             StopCycle();
+            DisposePool();
+            phaseFinished = state.Name == StateStop || state.Name == StateP4;
         }
 
         private void Update()
@@ -128,10 +165,18 @@ namespace OrbRadiance
                                                OrbRadiance.EffectiveHardMode))
             {
                 StopCycle();
+                DisposePool();
+                return;
+            }
+            HeroController hero = HeroController.instance;
+            if (hero != null && hero.cState.dead)
+            {
+                StopCycle();
+                DisposePool();
+                phaseFinished = true;
                 return;
             }
 
-            // StateChanged 处理短暂的阶段切换；轮询用于场景重新加载时兜底。
             string state = control.Fsm.ActiveStateName;
             if (state != lastState)
             {
@@ -140,10 +185,18 @@ namespace OrbRadiance
             }
             else if (state == StateStart && !running && !awaitingFreshP2Entry)
             {
-                // 在 P2 切换总开关或重新启用组件时，完整重启一次私有地刺周期。
-                HandleState(state);
+                pendingStart = true;
             }
 
+            // 从 P1 开始做准备；未找到原版对象时每秒重试，绝不在进入 P2 的同帧批量实例化。
+            if (!phaseFinished && !poolReady && prewarmRoutine == null && poolRoot == null &&
+                Time.time >= nextPrewarmAttempt)
+            {
+                nextPrewarmAttempt = Time.time + PrewarmRetrySeconds;
+                BeginPrewarm();
+            }
+            if (pendingStart && poolReady && !phaseFinished && !awaitingFreshP2Entry)
+                StartCycle();
             if (!running) return;
 
             DriveSpikeRises();
@@ -158,10 +211,7 @@ namespace OrbRadiance
                 riseStatusLogged = true;
             }
             if (P2PlatformSpikePlan.AdvanceCycle(ref cycleElapsed, Time.deltaTime, CycleSeconds))
-            {
-                // 帧卡顿后不补发错过的周期，而是从当前时刻开始新周期。
                 BuildCycle();
-            }
         }
 
         private void HandleState(string state)
@@ -169,21 +219,27 @@ namespace OrbRadiance
             if (P2PlatformSpikePlan.ShouldStopCycle(state))
             {
                 StopCycle();
+                DisposePool();
+                // 进入 P3/P4 后不在同场战斗重新预热；只有下一场重战才能再次准备。
+                phaseFinished = state == StateStop || state == StateP4;
                 return;
             }
-
             if (state == StateStart &&
                 P2PlatformSpikePlan.ShouldRun(OrbRadiance.Settings.Enabled,
                                               OrbRadiance.EffectiveEasyMode,
                                               OrbRadiance.EffectiveHardMode))
             {
-                StartCycle();
+                phaseFinished = false;
+                awaitingFreshP2Entry = false;
+                pendingStart = true;
+                if (poolReady) StartCycle();
             }
         }
 
         private void StartCycle()
         {
-            if (running) return;
+            if (running || !poolReady || phaseFinished) return;
+            pendingStart = false;
             running = true;
             cycleElapsed = 0f;
             BuildCycle();
@@ -192,24 +248,106 @@ namespace OrbRadiance
         private void StopCycle()
         {
             running = false;
+            pendingStart = false;
             cycleElapsed = 0f;
             ClearCycle();
         }
 
+        private void BeginPrewarm()
+        {
+            if (!ResolveSpikeTemplate()) return;
+            Transform plats = ResolvePlatSets();
+            if (plats == null) return;
+            // P1 便验证七个平台存在，失败时稍后重试，避免造了半个对象池。
+            for (int i = 0; i < PlatformPaths.Length; i++)
+                if (plats.Find(PlatformPaths[i]) == null) return;
+
+            poolRoot = new GameObject("NORMAL P2 pooled platform spikes");
+            poolRoot.transform.SetParent(spikeRoot, false);
+            poolRoot.transform.localPosition = Vector3.zero;
+            poolRoot.transform.localRotation = Quaternion.identity;
+            poolRoot.transform.localScale = Vector3.one;
+            poolRoot.SetActive(false);
+            for (int i = 0; i < PlatformsPerCycle; i++)
+            {
+                poolGroups[i] = new GameObject("P2 pooled spike group " + (i + 1));
+                poolGroups[i].transform.SetParent(poolRoot.transform, false);
+            }
+            prewarmCount = 0;
+            prewarmTotalMs = 0d;
+            prewarmWorstBatchMs = 0d;
+            prewarmBatches = 0;
+            prewarmRoutine = StartCoroutine(PrewarmSpikes());
+        }
+
+        private IEnumerator PrewarmSpikes()
+        {
+            while (poolRoot != null && !poolReady && prewarmCount < PlatformsPerCycle * SpikesPerPlatform)
+            {
+                Stopwatch batch = Stopwatch.StartNew();
+                int done = 0;
+                try
+                {
+                    while (prewarmCount < PlatformsPerCycle * SpikesPerPlatform &&
+                           done < PrewarmPerFrame &&
+                           (done == 0 || batch.Elapsed.TotalMilliseconds < PrewarmBudgetMilliseconds))
+                    {
+                        int groupIndex = prewarmCount / SpikesPerPlatform;
+                        int spikeIndex = prewarmCount % SpikesPerPlatform;
+                        GameObject group = poolGroups[groupIndex];
+                        GameObject spike = Instantiate(spikeTemplate, group.transform);
+                        if (spike == null) throw new InvalidOperationException("Instantiate returned null");
+                        spike.name = "P2 pooled spike " + (groupIndex + 1) + " #" + (spikeIndex + 1);
+                        spike.transform.localScale = spikeTemplate.transform.localScale;
+                        spike.transform.rotation = spikeTemplate.transform.rotation;
+                        spike.transform.position = spikeTemplate.transform.position;
+                        if (!ConfigurePrivateSpike(spike, group, templateControl, AnticSeconds,
+                                                   poolControls[groupIndex]))
+                            throw new InvalidOperationException("Private spike setup failed: " + spike.name);
+                        prewarmCount++;
+                        done++;
+                    }
+                }
+                catch (Exception e)
+                {
+                    OrbRadiance.Instance.LogWarn("[spikes] NORMAL P2 prewarm failed: " + e.Message);
+                    prewarmRoutine = null;
+                    DisposePool();
+                }
+                finally
+                {
+                    batch.Stop();
+                    double batchMs = batch.Elapsed.TotalMilliseconds;
+                    prewarmTotalMs += batchMs;
+                    prewarmWorstBatchMs = Math.Max(prewarmWorstBatchMs, batchMs);
+                    prewarmBatches++;
+                }
+                if (poolRoot == null) yield break;
+                yield return null;
+            }
+            if (poolRoot != null && prewarmCount == PlatformsPerCycle * SpikesPerPlatform)
+            {
+                poolReady = true;
+                prewarmRoutine = null;
+                OrbRadiance.Instance.Log("[spikes] NORMAL P2 prewarm ready: " + prewarmCount +
+                    " private spikes, batches=" + prewarmBatches + ", prepMs=" +
+                    prewarmTotalMs.ToString("F2") + ", worstBatchMs=" +
+                    prewarmWorstBatchMs.ToString("F2"));
+            }
+        }
+
+        // 周期开始只调整 36 个已创建对象的位置和状态，不再 Instantiate/Destroy。
         private void BuildCycle()
         {
             ClearCycle();
-            if (!ResolveSpikeTemplate()) return;
-
+            if (!poolReady || poolRoot == null) return;
             Transform plats = ResolvePlatSets();
             if (plats == null)
             {
                 OrbRadiance.Instance.LogWarn("OrbRadiance: 找不到 " + PlatSetsPath + "，本轮平台刺取消");
                 return;
             }
-
             GameObject[] platforms = new GameObject[PlatformPaths.Length];
-            BoxCollider2D[] boxes = new BoxCollider2D[PlatformPaths.Length];
             P2PlatformSpikePlan.PlatformSpan[] spans = new P2PlatformSpikePlan.PlatformSpan[PlatformPaths.Length];
             for (int i = 0; i < PlatformPaths.Length; i++)
             {
@@ -220,9 +358,9 @@ namespace OrbRadiance
                     return;
                 }
                 platforms[i] = platform.gameObject;
-                boxes[i] = platform.GetComponentsInChildren<BoxCollider2D>(true)
-                    .FirstOrDefault(box => box != null && !box.isTrigger);
-                if (boxes[i] == null || !TryGetBoxBounds(boxes[i], out Bounds2 bounds))
+                BoxCollider2D box = platform.GetComponentsInChildren<BoxCollider2D>(true)
+                    .FirstOrDefault(candidate => candidate != null && !candidate.isTrigger);
+                if (box == null || !TryGetBoxBounds(box, out Bounds2 bounds))
                 {
                     OrbRadiance.Instance.LogWarn("OrbRadiance: P2 platform has no usable solid BoxCollider2D: " + PlatformPaths[i]);
                     return;
@@ -233,56 +371,47 @@ namespace OrbRadiance
             int[] chosen = P2PlatformSpikePlan.ChooseFour(platforms.Length, max => UnityEngine.Random.Range(0, max));
             P2PlatformSpikePlan.SpikePlacement[] placements = P2PlatformSpikePlan.BuildPlacements(
                 chosen, spans, spikeHalfWidth, SpikesPerPlatform);
-            GameObject root = new GameObject("NORMAL P2 platform spikes cycle");
-            cycleRoot = root; // 配置克隆前先登记所有权，以便失败时统一清理部分创建的对象。
-            root.transform.SetParent(spikeRoot, false);
-            root.transform.localPosition = Vector3.zero;
-            root.transform.localRotation = Quaternion.identity;
-            root.transform.localScale = Vector3.one;
-            root.SetActive(false);
-
-            GameObject[] platformGroups = new GameObject[PlatformPaths.Length];
-            foreach (int platformIndex in chosen)
-            {
-                GameObject group = new GameObject("P2 cycle platform " + PlatformPaths[platformIndex]);
-                group.transform.SetParent(root.transform, false);
-                platformGroups[platformIndex] = group;
-            }
-
             try
             {
-                for (int placementIndex = 0; placementIndex < placements.Length; placementIndex++)
+                for (int groupIndex = 0; groupIndex < PlatformsPerCycle; groupIndex++)
                 {
-                    P2PlatformSpikePlan.SpikePlacement placement = placements[placementIndex];
-                    GameObject platformGroup = platformGroups[placement.platformIndex];
-                    if (platformGroup == null) throw new InvalidOperationException("Missing private platform group");
-                    GameObject spike = Instantiate(spikeTemplate, platformGroup.transform);
-                    if (spike == null) throw new InvalidOperationException("Instantiate returned null");
-                    spike.name = "P2 cycle spike " + PlatformPaths[placement.platformIndex] + " #" +
-                                 (placementIndex % SpikesPerPlatform + 1);
-                    spike.transform.localScale = spikeTemplate.transform.localScale;
-                    spike.transform.rotation = spikeTemplate.transform.rotation;
-                    spike.transform.position = new Vector3(placement.x, placement.platformTopY + spikeBottomOffset,
-                                                           spikeTemplate.transform.position.z);
-
-                    if (!ConfigurePrivateSpike(spike, platformGroup, templateControl, AnticSeconds, cycleControls))
-                        throw new InvalidOperationException("Native spike clone failed private FSM/hazard setup: " + spike.name);
+                    GameObject group = poolGroups[groupIndex];
+                    if (group == null || poolControls[groupIndex].Count != SpikesPerPlatform)
+                        throw new InvalidOperationException("Private spike pool group missing");
+                    int platformIndex = chosen[groupIndex];
+                    group.name = "P2 cycle platform " + PlatformPaths[platformIndex];
+                    for (int i = 0; i < SpikesPerPlatform; i++)
+                    {
+                        PlayMakerFSM fsm = poolControls[groupIndex][i];
+                        if (fsm == null || fsm.Fsm == null) throw new InvalidOperationException("Pooled FSM missing");
+                        P2PlatformSpikePlan.SpikePlacement placement = placements[groupIndex * SpikesPerPlatform + i];
+                        GameObject spike = fsm.gameObject;
+                        spike.transform.position = new Vector3(placement.x,
+                            placement.platformTopY + spikeBottomOffset, spikeTemplate.transform.position.z);
+                        // 隐藏的子树归位；启用前清除旧周期的碰撞与渲染状态。
+                        if (fsm.Fsm.Started && fsm.Fsm.ActiveStateName != "Downed") fsm.SetState("Downed");
+                        foreach (Collider2D collider in spike.GetComponentsInChildren<Collider2D>(true))
+                            if (collider != null) collider.enabled = false;
+                        foreach (Renderer renderer in spike.GetComponentsInChildren<Renderer>(true))
+                            if (renderer != null) renderer.enabled = false;
+                        cycleControls.Add(fsm);
+                    }
                 }
-
                 if (cycleControls.Count != PlatformsPerCycle * SpikesPerPlatform)
-                    throw new InvalidOperationException("Expected 36 configured spikes, got " + cycleControls.Count);
-                root.SetActive(true);
+                    throw new InvalidOperationException("Expected 36 private spikes");
+                initialRiseSent.Clear();
+                normalizedDown.Clear();
+                riseStatusLogged = false;
+                poolRoot.SetActive(true);
             }
             catch (Exception e)
             {
                 ClearCycle();
-                OrbRadiance.Instance.LogWarn("OrbRadiance: NORMAL P2 platform spike cycle aborted safely: " + e.Message);
+                OrbRadiance.Instance.LogWarn("[spikes] NORMAL P2 pooled cycle skipped safely: " + e.Message);
                 return;
             }
-
-            OrbRadiance.Instance.Log("[spikes] NORMAL P2 cycle: 4 distinct platforms, 9 native spikes each (36 total), " +
-                                     "next cycle in " + CycleSeconds + "s; Hero Saver sends SPIKES DOWN to its private platform group, " +
-                                     AnticSeconds + "s antic");
+            OrbRadiance.Instance.Log("[spikes] NORMAL P2 pooled cycle: 4 distinct platforms × 9 spikes, next cycle in " +
+                                     CycleSeconds + "s; no spike Instantiate");
         }
 
         private bool ResolveSpikeTemplate()
@@ -460,14 +589,35 @@ namespace OrbRadiance
 
         private void ClearCycle()
         {
+            if (poolRoot != null) poolRoot.SetActive(false);
             riseStatusLogged = false;
             cycleControls.Clear();
             initialRiseSent.Clear();
             normalizedDown.Clear();
-            if (cycleRoot == null) return;
-            cycleRoot.SetActive(false);
-            Destroy(cycleRoot);
-            cycleRoot = null;
+        }
+
+        private void DisposePool()
+        {
+            // 等待下一次真正入场时重新预热，不能保留指向已经卸载场景的 FSM 引用。
+            if (prewarmRoutine != null) StopCoroutine(prewarmRoutine);
+            prewarmRoutine = null;
+            poolReady = false;
+            prewarmCount = 0;
+            ClearCycle();
+            if (poolRoot != null)
+            {
+                poolRoot.SetActive(false);
+                Destroy(poolRoot);
+            }
+            poolRoot = null;
+            for (int i = 0; i < PlatformsPerCycle; i++)
+            {
+                poolControls[i].Clear();
+                poolGroups[i] = null;
+            }
+            spikeTemplate = null;
+            templateControl = null;
+            spikeRoot = null;
         }
 
         private string ArenaState()
@@ -506,6 +656,8 @@ namespace OrbRadiance
             awaitingFreshP2Entry = true;
             OrbRadiance.Instance.Log("[spikes] NORMAL P2 cycle reset by parent state poll: " + state);
             StopCycle();
+            DisposePool();
+            phaseFinished = state == StateStop || state == StateP4;
             return true;
         }
 

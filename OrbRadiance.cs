@@ -554,6 +554,8 @@ namespace OrbRadiance
         {
             P3RisingVoid.RestoreAll();
             P2OrbPlatforms.RestoreAll();
+            P2PlatformSpikes.RestoreAll();
+            P2GroundSpikes.RestoreAll();
             BluePhaseBindings.RestoreAll();
             WorkshopHiddenRoom.Cleanup(true);
             BossHP.Restore();
