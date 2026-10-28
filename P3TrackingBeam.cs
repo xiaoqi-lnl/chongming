@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace OrbRadiance
 {
-    // NORMAL P3 每轮一束追踪激光：追踪 0.3s、锁定 0.1s、发射 0.2s、间隔 0.2s。
+    // NORMAL P3 每轮一束追踪激光：追踪 0.3s、锁定 0.2s、发射 0.2s、间隔 0.2s。
 
 
     internal sealed class P3TrackingBeam : MonoBehaviour
@@ -20,7 +20,7 @@ namespace OrbRadiance
 
         // 用户指定的三段时序，不计首次克隆 FSM 的启动等待。
         private const float TrackTime = 0.3f;
-        private const float HoldTime = 0.1f;
+        private const float HoldTime = 0.25f;
         private const float FireTime = 0.2f;
         private const float Interval = 0.2f;
         private const float StartTimeout = 1f;

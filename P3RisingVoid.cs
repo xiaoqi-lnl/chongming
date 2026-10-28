@@ -14,8 +14,8 @@ namespace OrbRadiance
         private const string EntryState = "Ascend Tele";
         private const string LateEntryState = "Ascend Cast";
         private const string ExitState = "Scream";
-        private const float NormalRiseSpeed = 1f;
-        private const float HardRiseSpeed = 1.5f;
+        private const float NormalRiseSpeed = 2.5f;
+        private const float HardRiseSpeed = 3.5f;
         private const float ActionResolveTimeout = 1.5f;
         private static readonly string[] ResetStates = { "Battle Start", "Refight", "Init", "Setup" };
         private static readonly HashSet<P3RisingVoid> Instances = new HashSet<P3RisingVoid>();

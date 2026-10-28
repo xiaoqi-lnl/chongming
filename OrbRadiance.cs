@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -245,12 +245,21 @@ namespace OrbRadiance
                             // 由 HardBeamWall 接管成「随机位置预警柱 + 齐射」（见 HardBeamWall.cs）
                             if (EffectiveHardMode) HardBeamWall.PatchSuppress(self.Fsm);
 
+                            // 三难度 P1 + Z/N P2 光墙：统一先显示 0.8 秒双柱预警，再启动 x=61 镜像双墙。
+                            // H P2 仍由 HardBeamWall 自行控制，不接管。
+                            if (self.gameObject.name == "Absolute Radiance")
+                                P1BeamWallWarning.PatchBypass(self.Fsm);
+
                             // P1 横刺：关掉 COMB L/R 的三连发、改窗口时长，由 P1NailSweep 自己立墙抽剑。
                             // 只改神居无上辐光 —— 普通辐光（Dream_Final_Boss/Radiance）也有同名
                             // Nail L/R Sweep，那边没有替代实现，接管了横刺就没了（见 P1NailSweep 头注释）。
                             if (self.gameObject.name == "Absolute Radiance")
                                 P1NailSweep.Patch(self.Fsm);
                         }
+                        if (self.gameObject.name == "Absolute Radiance" &&
+                            self.gameObject.GetComponent<P1BeamWallWarning>() == null)
+                            self.gameObject.AddComponent<P1BeamWallWarning>().Init(self);
+
                         if (self.gameObject.GetComponent<OrbSpawner>() == null)
                             self.gameObject.AddComponent<OrbSpawner>().Init(self);
 
@@ -585,6 +594,8 @@ namespace OrbRadiance
             RageEyeBeam.Restore();
             FanEyeBeam.Restore();
             EyeBeamTrack.Restore();
+            P1BeamWallWarning.RestoreAll();
+            BeamSweeperDual.Restore();
             HardBeamWall.Restore();
             P2NailFanRing.Restore();
             // 必须排在 P2NailFanRing 之后：P2 中途关开关时，先让 P2NailFanRing 写回 ANY1，再写回原版

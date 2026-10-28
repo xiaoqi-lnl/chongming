@@ -52,9 +52,9 @@ namespace OrbRadiance
         // 两侧墙的生成点 = 原版 comb `L` / `R` 状态的 SetPosition（用户定「停留在原版生成点」）。
         // 竖墙：钉子沿 y 匀排、以生成点居中（原版 comb 的 Increment = 2）。
         private const float LeftX = 42.46f;
-        private const float LeftY = 26.73f;
+        private const float LeftY = 16.73f;
         private const float RightX = 78.46f;
-        private const float RightY = 28.73f;
+        private const float RightY = 18.73f;
 
         private const int NailsPerWall = 6;         // 每排 6 把（2026-10-05 用户定）
         private const float NailSpacing = 2f;       // 同原版 Increment

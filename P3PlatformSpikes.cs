@@ -33,7 +33,6 @@ namespace OrbRadiance
         private bool subscribed;
         private bool arenaSubscribed;
         private string lastArenaState;
-        private bool awaitingFreshEntry;
         private bool active;
         private bool deathCleanupDone;
         private float nextBuildAttempt;
@@ -80,7 +79,6 @@ namespace OrbRadiance
             activeInstance = this;
             if (control == null || control.Fsm == null) return;
             lastArenaState = ArenaState();
-            if (IsResetState(lastArenaState)) awaitingFreshEntry = true;
             Subscribe();
             HandleState(control.Fsm.ActiveStateName);
         }
@@ -206,7 +204,6 @@ namespace OrbRadiance
             // 构建失败时在 P3 按间隔重试，避免首帧源组件未就绪而整阶段无刺。
             if (state == StartState || state == CastState)
             {
-                awaitingFreshEntry = false;
                 if (IsSpikeMode())
                 {
                     if (!nzPhaseRequested)
@@ -231,7 +228,6 @@ namespace OrbRadiance
             if (state == null || state.Name == lastArenaState) return;
             lastArenaState = state.Name;
             if (!IsResetState(state.Name)) return;
-            awaitingFreshEntry = true;
             nextBuildAttempt = 0f;
             Stop();
         }
@@ -242,7 +238,6 @@ namespace OrbRadiance
             if (state == null || state == lastArenaState) return false;
             lastArenaState = state;
             if (!IsResetState(state)) return false;
-            awaitingFreshEntry = true;
             nextBuildAttempt = 0f;
             Stop();
             return true;

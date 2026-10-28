@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -38,6 +38,7 @@ namespace OrbRadiance
         private PlayMakerFSM control;   // 本体 Control
         private GameObject clone;
         private bool built;
+        private static BeamSweeperDual active;
 
         // 本体及克隆的改前值，关总开关时写回（随场景销毁，不会跨场累积）
         private readonly Dictionary<FsmFloat, float> origPos = new Dictionary<FsmFloat, float>();
@@ -45,7 +46,65 @@ namespace OrbRadiance
         private readonly Dictionary<FsmFloat, bool> origMoveTimeUseVariable = new Dictionary<FsmFloat, bool>();
         private readonly Dictionary<FsmStateAction, bool> origBool = new Dictionary<FsmStateAction, bool>();
 
-        internal void Init(PlayMakerFSM f) => control = f;
+        internal void Init(PlayMakerFSM f)
+        {
+            control = f;
+            if (gameObject.name == VanillaName) active = this;
+        }
+
+        // P1(Z/N/H) 和 P2(Z/N) 的广播必须在两个发射器都处于 Idle 时发送。
+        // 若克隆尚未就绪，不允许只发出单侧光墙，也不报告虚假的发射成功。
+        internal static bool CanTriggerSweep(out string stateInfo)
+        {
+            BeamSweeperDual instance = active;
+            if (!OrbRadiance.Settings.Enabled || instance == null || instance.control == null ||
+                instance.control.Fsm == null)
+            {
+                stateInfo = "Beam Sweeper 本体尚未就绪";
+                return false;
+            }
+            if (!instance.built || instance.clone == null) instance.Build();
+            PlayMakerFSM cloneControl = instance.clone != null ? FindControl(instance.clone) : null;
+            if (cloneControl == null || cloneControl.Fsm == null)
+            {
+                stateInfo = "镜像发射器尚未就绪";
+                return false;
+            }
+            string nativeState = instance.control.Fsm.ActiveStateName;
+            string mirrorState = cloneControl.Fsm.ActiveStateName;
+            stateInfo = "native=" + nativeState + ", mirror=" + mirrorState;
+            return nativeState == "Idle" && mirrorState == "Idle";
+        }
+
+        // 两种 P1/P2 事件均可通过同一发射器广播；克隆在 Idle 中把状态镜像反转。
+        internal static bool TriggerSweep(string sweepEvent)
+        {
+            if (sweepEvent != "BEAM SWEEP L" && sweepEvent != "BEAM SWEEP R" &&
+                sweepEvent != "BEAM SWEEP L2" && sweepEvent != "BEAM SWEEP R2") return false;
+            if ((sweepEvent == "BEAM SWEEP L2" || sweepEvent == "BEAM SWEEP R2") &&
+                OrbRadiance.EffectiveHardMode) return false;
+            if (!CanTriggerSweep(out string stateInfo)) return false;
+            BeamSweeperDual instance = active;
+            PlayMakerFSM mirror = FindControl(instance.clone);
+            instance.control.SendEvent(sweepEvent);
+            mirror.SendEvent(sweepEvent);
+            OrbRadiance.Instance.Log("[beam] SWEEP_DISPATCH t=" + Time.time.ToString("F3") +
+                " event=" + sweepEvent + " before=" + stateInfo);
+            return true;
+        }
+
+        // 保留旧接口，便于现有调用者继续使用。
+        internal static bool CanTriggerP1Sweep(out string stateInfo) => CanTriggerSweep(out stateInfo);
+        internal static bool TriggerP1Sweep(string sweepEvent)
+        {
+            if (sweepEvent != "BEAM SWEEP L" && sweepEvent != "BEAM SWEEP R") return false;
+            return TriggerSweep(sweepEvent);
+        }
+
+        internal static void Restore()
+        {
+            if (active != null) active.Teardown();
+        }
 
         private void Update()
         {
@@ -63,8 +122,7 @@ namespace OrbRadiance
 
         private void Build()
         {
-            built = true;
-
+            if (clone != null) return;
             try
             {
                 clone = Instantiate(gameObject, transform.parent);
@@ -92,6 +150,7 @@ namespace OrbRadiance
                 return;
             }
 
+            built = true;
             float p1SpeedMultiplier = P1SpeedMultiplier();
             int a = PatchOriginal(control.Fsm, p1SpeedMultiplier);
             int b = PatchClone(cf.Fsm, clone, p1SpeedMultiplier);
@@ -99,6 +158,72 @@ namespace OrbRadiance
             OrbRadiance.Instance.Log("[beam] 光墙双发就位：本体 " + a + " 处 / 克隆 " + b +
                                      " 处 sweep 状态改为 x=" + CenterX +
                                      "；克隆 Idle 转移已镜像（同一发广播 → 相反方向）");
+
+            DumpP1BeamVisualInfo();
+        }
+
+        // 临时诊断：打印原版 P1 光墙真正生成的预制体、渲染器和材质。
+        // 只读取原版 FSM，不改预制体及战斗逻辑，确认后可删除本方法及调用。
+        private void DumpP1BeamVisualInfo()
+        {
+            if (control == null || control.Fsm == null) return;
+            try
+            {
+                foreach (string stateName in P1SweepStates)
+                {
+                    FsmState state = control.Fsm.GetState(stateName);
+                    if (state == null)
+                    {
+                        OrbRadiance.Instance.LogWarn("[beam-prefab] 缺少状态 " + stateName);
+                        continue;
+                    }
+                    int found = 0;
+                    foreach (FsmStateAction action in state.Actions)
+                    {
+                        SpawnObjectFromGlobalPoolOverTime spawn = action as SpawnObjectFromGlobalPoolOverTime;
+                        if (spawn == null) continue;
+                        found++;
+                        GameObject prefab = spawn.gameObject != null ? spawn.gameObject.Value : null;
+                        if (prefab == null)
+                        {
+                            OrbRadiance.Instance.LogWarn("[beam-prefab] " + stateName + " 的生成动作为空预制体");
+                            continue;
+                        }
+                        Renderer[] renderers = prefab.GetComponentsInChildren<Renderer>(true);
+                        tk2dBaseSprite[] sprites = prefab.GetComponentsInChildren<tk2dBaseSprite>(true);
+                        OrbRadiance.Instance.Log("[beam-prefab] " + stateName + " => " + prefab.name +
+                            " / renderers=" + renderers.Length + " / tk2d=" + sprites.Length);
+                        foreach (Renderer renderer in renderers)
+                        {
+                            if (renderer == null) continue;
+                            Material mat = renderer.sharedMaterial;
+                            string shaderName = mat != null && mat.shader != null ? mat.shader.name : "(无)";
+                            Texture tex = mat != null ? mat.mainTexture : null;
+                            OrbRadiance.Instance.Log("[beam-prefab] renderer=" + renderer.GetType().Name +
+                                " object=" + renderer.gameObject.name + " shader=" + shaderName +
+                                " texture=" + (tex != null ? tex.name : "(无)"));
+                        }
+                        foreach (tk2dBaseSprite sprite in sprites)
+                        {
+                            if (sprite != null)
+                                OrbRadiance.Instance.Log("[beam-prefab] tk2d=" + sprite.gameObject.name +
+                                    " spriteId=" + sprite.spriteId);
+                        }
+                    }
+                    if (found == 0)
+                    {
+                        string names = string.Join(", ", state.Actions
+                            .Where(a => a != null && a.GetType().Name.IndexOf("Spawn", StringComparison.OrdinalIgnoreCase) >= 0)
+                            .Select(a => a.GetType().Name).Distinct().ToArray());
+                        OrbRadiance.Instance.LogWarn("[beam-prefab] " + stateName +
+                            " 找不到 SpawnObjectFromGlobalPoolOverTime；其他 Spawn 动作：" + names);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                OrbRadiance.Instance.LogWarn("[beam-prefab] 读取原版光墙渲染信息失败：" + e);
+            }
         }
 
         // 本体：只原位改字段值（SetPosition.x、BoolTest.Enabled），不增删动作
@@ -250,6 +375,12 @@ namespace OrbRadiance
             origBool.Clear();
 
             OrbRadiance.Instance.Log("[beam] 光墙双发已还原（克隆销毁、本体起点/速度/BoolTest 写回）");
+        }
+
+        private void OnDestroy()
+        {
+            Teardown();
+            if (active == this) active = null;
         }
 
         private static PlayMakerFSM FindControl(GameObject go)
