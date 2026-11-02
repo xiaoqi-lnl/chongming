@@ -302,7 +302,7 @@ namespace OrbRadiance
                         spike.transform.rotation = spikeTemplate.transform.rotation;
                         spike.transform.position = spikeTemplate.transform.position;
                         if (!ConfigurePrivateSpike(spike, group, templateControl, AnticSeconds,
-                                                   poolControls[groupIndex]))
+                                                   poolControls[groupIndex], 1))
                             throw new InvalidOperationException("Private spike setup failed: " + spike.name);
                         prewarmCount++;
                         done++;
