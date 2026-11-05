@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -175,7 +175,7 @@ namespace OrbRadiance
 
         internal static bool EffectiveHardMode => WorkshopStatueLifecycle.EffectiveHardMode(Settings.HardMode);
         internal static bool EffectiveEasyMode => BattleModeState.IsEasy;
-        internal static float EffectiveOrbDissipateWait => EffectiveHardMode ? 4f : (EffectiveEasyMode ? 1.35f : 2.675f);
+        internal static float EffectiveOrbDissipateWait => EffectiveHardMode ? 4f : (EffectiveEasyMode ? 1.2f : 2.2f);
 
         public override void Initialize(Dictionary<string, Dictionary<string, GameObject>> preloadedObjects)
         {
@@ -433,7 +433,13 @@ namespace OrbRadiance
                 if (self.FsmName != "Orb Control") return;
                 if (!Settings.Enabled) return;
                 if (BluePhaseBindings.IsPermanentOrb(self.gameObject)) return;
-                Patch(self.Fsm);            }
+                Patch(self.Fsm);
+                // Z/N P4 使用原版出球循环：在光球 FSM 启用时加入同步消散组，
+                // 并将出生时过近的光球移到距玩家至少 3 单位的位置。
+                // P1/P2 由 OrbSpawner.SpawnOne() 单独登记，避免重复注册。
+                if (!EffectiveHardMode && IsFinalOrbPhase())
+                    OrbSpawner.RegisterNativeFinalOrb(self);
+            }
             catch (Exception e)
             {
                 LogError("OrbRadiance: " + e);

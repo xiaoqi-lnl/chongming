@@ -31,6 +31,8 @@ namespace OrbRadiance
         // 原版 Orb Pos 的约束：与 boss 距离落在 3~11 才用，否则重选
         private const float MinDistFromSelf = 3f;
         private const float MaxDistFromSelf = 11f;
+        // Z/N 专用：光球在实际出现的瞬间，距玩家至少 3 个 XY 世界单位。
+        private const float MinDistFromHero = 3f;
         private const int MaxPosTries = 20;
 
         private PlayMakerFSM choices;
@@ -60,6 +62,28 @@ namespace OrbRadiance
         private float nextChargeAt;
         private Vector3 pendingPos;     // 正在蓄力的那颗球的目标点
 
+        private sealed class OrbEntry
+        {
+            internal PlayMakerFSM Control;
+            internal OrbSpawnMarker Marker;
+            internal int Serial;
+        }
+
+        private sealed class OrbGroup
+        {
+            internal string Name;
+            internal float FirstSpawnTime;
+            internal float Deadline;
+            internal bool HasFirst;
+            internal readonly List<OrbEntry> Members = new List<OrbEntry>();
+        }
+
+        // P1/P2 按球招分组；P4 是原版连续出球，按首颗存活窗口分组。
+        private readonly List<OrbGroup> groups = new List<OrbGroup>();
+        private OrbGroup currentAttackGroup;
+        private OrbGroup currentFinalGroup;
+        private int spawnSerial;
+
         internal void Init(PlayMakerFSM choicesFsm)
         {
             choices = choicesFsm;
@@ -67,15 +91,20 @@ namespace OrbRadiance
 
         private void Update()
         {
-            if (choices == null || choices.Fsm == null) return;
-
             if (!OrbRadiance.Settings.Enabled)
             {
                 remaining = 0;      // 关掉时停手，别再往场上放球
                 charging = false;
-                lastState = choices.Fsm.ActiveStateName;
+                groups.Clear();     // 关闭 MOD 时不再操纵已生成的光球
+                currentAttackGroup = null;
+                currentFinalGroup = null;
+                if (choices != null && choices.Fsm != null) lastState = choices.Fsm.ActiveStateName;
                 return;
             }
+
+            // 即使这一帧不再放球，也必须照常检查之前各轮光球的同步消散时间。
+            ExpireGroups();
+            if (choices == null || choices.Fsm == null) return;
 
             string cur = choices.Fsm.ActiveStateName;
             bool changed = cur != lastState;
@@ -107,12 +136,21 @@ namespace OrbRadiance
                 }
                 remaining = total;
                 charging = false;
+                if (currentAttackGroup != null && !currentAttackGroup.HasFirst)
+                    groups.Remove(currentAttackGroup); // 上一轮没有放出任何球
+                currentAttackGroup = null;
+                if (!OrbRadiance.EffectiveHardMode)
+                {
+                    currentAttackGroup = new OrbGroup { Name = mode + " P1/P2" };
+                    groups.Add(currentAttackGroup);
+                }
                 nextChargeAt = Time.time;   // 下一帧就在目标点亮出蓄力特效
                 OrbRadiance.Instance.Log("[orbspawn] 进 Orbs → 模式 " + mode + "（" + countPolicy +
                                          "）开始放 " + total +
                                          " 颗球（每颗蓄力 " + ChargeTime + "s、间隔 " + GapTime +
-                                         "s；预计完全消失约 " + (OrbRadiance.ChaseHeroWait +
-                                         OrbRadiance.EffectiveOrbDissipateWait + 0.8f).ToString("0.##") + "s）");
+                                         "s；首颗开始消散约 " + (OrbRadiance.ChaseHeroWait +
+                                         OrbRadiance.EffectiveOrbDissipateWait).ToString("0.##") +
+                                         "s，此轮同步消散）");
                 return;
             }
 
@@ -144,6 +182,15 @@ namespace OrbRadiance
         // 所以蓄力期间 boss 还保持着施法姿势，之后第 2、3 颗球才和下一招同时在场。
         private void Release()
         {
+            // 玩家可能在 0.4s 蓄力期间靠近预定生成点。若此时距离不足 3，
+            // 重新选点并给出完整蓄力提示，避免警告显示在旧点却突然贴脸出球。
+            if (!OrbRadiance.EffectiveHardMode && IsTooCloseToHero(pendingPos))
+            {
+                OrbRadiance.Instance.Log("[orbspawn] 玩家进入蓄力点 3 单位内，重新选安全出球点并重播蓄力");
+                StartCharge();
+                return;
+            }
+
             charging = false;
             remaining--;
             nextChargeAt = Time.time + GapTime;
@@ -200,8 +247,15 @@ namespace OrbRadiance
                 OrbRadiance.Instance.LogError("OrbRadiance: 初始化光球抛异常 " + e);
             }
 
+            if (!OrbRadiance.EffectiveHardMode && currentAttackGroup != null)
+                RegisterOrb(currentAttackGroup, orb.GetComponents<PlayMakerFSM>()
+                    .FirstOrDefault(f => f != null && f.FsmName == "Orb Control"));
+
+            HeroController heroNow = HeroController.instance;
+            string heroDistance = heroNow == null ? "unknown" :
+                Vector2.Distance((Vector2)pos, (Vector2)heroNow.transform.position).ToString("F2");
             OrbRadiance.Instance.Log("[orbspawn] 放出光球 pos=(" + pos.x.ToString("F2") + "," +
-                                     pos.y.ToString("F2") + ") rbKinematic=" +
+                                     pos.y.ToString("F2") + ") distHero=" + heroDistance + " rbKinematic=" +
                                      (orb.GetComponent<Rigidbody2D>() == null ? "(无Rigidbody2D)" :
                                       orb.GetComponent<Rigidbody2D>().isKinematic.ToString()) +
                                      " 剩余=" + remaining);
@@ -451,19 +505,71 @@ namespace OrbRadiance
             float maxX = Var("Orb Max X", 72f);
             float minY = Var("Orb Min Y", 22f);
             float maxY = Var("Orb Max Y", 34f);
-            Vector3 self = transform.position;
+            Vector2 self = transform.position;
+            HeroController hero = HeroController.instance;
+            bool needHeroDistance = !OrbRadiance.EffectiveHardMode && hero != null;
+            Vector2 heroPos = needHeroDistance ? (Vector2)hero.transform.position : Vector2.zero;
 
             for (int i = 0; i < MaxPosTries; i++)
             {
                 Vector3 p = new Vector3(UnityEngine.Random.Range(minX, maxX),
                                         UnityEngine.Random.Range(minY, maxY), -0.1f);
-                float d = Vector2.Distance(p, self);
+                float d = Vector2.Distance((Vector2)p, self);
                 if (d < MinDistFromSelf || d > MaxDistFromSelf) continue;
+                if (needHeroDistance && Vector2.Distance((Vector2)p, heroPos) < MinDistFromHero) continue;
                 return p;
             }
-            // 20 次都没落进 3~11：退回矩形中点，别让球放不出来
-            OrbRadiance.Instance.LogWarn("OrbRadiance: 光球位置 20 次都没落进 3~11，改用矩形中点");
-            return new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, -0.1f);
+
+            if (!needHeroDistance)
+            {
+                // H 模式沿用原来的位置策略（包括原有兜底）。
+                OrbRadiance.Instance.LogWarn("OrbRadiance: 光球位置 20 次都没落进 3~11，改用矩形中点");
+                return new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, -0.1f);
+            }
+
+            // 随机失败不再无条件退回矩形中点：扫描矩形，优先保留原版与 Boss 的距离约束。
+            // 只有两项约束无法同时满足时，才让玩家最小距离优先。
+            Vector2 best = Vector2.zero;
+            bool haveHeroSafe = false;
+            float bestScore = float.NegativeInfinity;
+            for (int iy = 0; iy <= 16; iy++)
+            for (int ix = 0; ix <= 16; ix++)
+            {
+                Vector2 candidate = new Vector2(Mathf.Lerp(minX, maxX, ix / 16f),
+                                                 Mathf.Lerp(minY, maxY, iy / 16f));
+                float heroDist = Vector2.Distance(candidate, heroPos);
+                if (heroDist < MinDistFromHero) continue;
+                float bossDist = Vector2.Distance(candidate, self);
+                if (bossDist >= MinDistFromSelf && bossDist <= MaxDistFromSelf)
+                    return new Vector3(candidate.x, candidate.y, -0.1f);
+                float score = -Mathf.Abs(bossDist - Mathf.Clamp(bossDist, MinDistFromSelf, MaxDistFromSelf));
+                if (!haveHeroSafe || score > bestScore)
+                {
+                    haveHeroSafe = true;
+                    bestScore = score;
+                    best = candidate;
+                }
+            }
+            if (haveHeroSafe)
+            {
+                OrbRadiance.Instance.LogWarn("[orbspawn] 3~11 Boss 距离与玩家距离约束无法同时满足，优先保证玩家距离>=3");
+                return new Vector3(best.x, best.y, -0.1f);
+            }
+
+            // 极端情况下矩形都被玩家半径 3 覆盖；把位置推到半径外，不允许近距离兜底。
+            Vector2 center = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+            Vector2 away = center - heroPos;
+            if (away.sqrMagnitude < 0.0001f) away = self - heroPos;
+            if (away.sqrMagnitude < 0.0001f) away = Vector2.right;
+            center = heroPos + away.normalized * (MinDistFromHero + 0.05f);
+            OrbRadiance.Instance.LogWarn("[orbspawn] 出球矩形无法满足玩家3单位安全半径，使用矩形外安全点");
+            return new Vector3(center.x, center.y, -0.1f);
+        }
+
+        private static bool IsTooCloseToHero(Vector3 pos)
+        {
+            HeroController hero = HeroController.instance;
+            return hero != null && Vector2.Distance((Vector2)pos, (Vector2)hero.transform.position) < MinDistFromHero;
         }
 
         private float Var(string name, float fallback)
@@ -476,6 +582,124 @@ namespace OrbRadiance
             }
             OrbRadiance.Instance.LogWarn("OrbRadiance: Attack Commands 缺变量 " + name + "，用兜底值 " + fallback);
             return fallback;
+        }
+
+        // P1/P2 由本组件直接放球；P4 走原版 Spawn Fireball，在 Orb Control OnEnable 时登记。
+        internal static void RegisterNativeFinalOrb(PlayMakerFSM orbControl)
+        {
+            if (orbControl == null || OrbRadiance.EffectiveHardMode || !OrbRadiance.Settings.Enabled) return;
+            GameObject boss = GameObject.Find("Absolute Radiance");
+            OrbSpawner spawner = boss != null ? boss.GetComponent<OrbSpawner>() : null;
+            if (spawner == null) return;
+
+            // 先在激活时修正一次；等待光球实际进入追踪状态后再登记到同步组，
+            // 避免对象池启用过早造成“第一颗消散时间”提前。
+            EnsureHeroSpawnDistance(orbControl.gameObject);
+            OrbP4SpawnSafety safety = orbControl.GetComponent<OrbP4SpawnSafety>();
+            if (safety == null) safety = orbControl.gameObject.AddComponent<OrbP4SpawnSafety>();
+            safety.Arm(orbControl);
+        }
+
+        internal static void EnrollNativeFinalOrb(PlayMakerFSM orbControl)
+        {
+            if (orbControl == null || OrbRadiance.EffectiveHardMode || !OrbRadiance.Settings.Enabled) return;
+            GameObject boss = GameObject.Find("Absolute Radiance");
+            OrbSpawner spawner = boss != null ? boss.GetComponent<OrbSpawner>() : null;
+            if (spawner == null) return;
+            if (spawner.currentFinalGroup == null ||
+                (spawner.currentFinalGroup.HasFirst && Time.time >= spawner.currentFinalGroup.Deadline))
+            {
+                spawner.currentFinalGroup = new OrbGroup { Name = OrbRadiance.EffectiveEasyMode ? "Z P4" : "N P4" };
+                spawner.groups.Add(spawner.currentFinalGroup);
+            }
+            spawner.RegisterOrb(spawner.currentFinalGroup, orbControl);
+        }
+
+        // 不干预光球后续追踪，只在出生检查过近的坐标。
+        internal static void EnsureHeroSpawnDistance(GameObject orb)
+        {
+            if (orb == null || !OrbRadiance.Settings.Enabled || OrbRadiance.EffectiveHardMode) return;
+            HeroController hero = HeroController.instance;
+            if (hero == null) return;
+            Vector2 heroPos = hero.transform.position;
+            Vector2 delta = (Vector2)orb.transform.position - heroPos;
+            float dist = delta.magnitude;
+            if (dist >= MinDistFromHero) return;
+            if (dist < 0.0001f) delta = Vector2.right;
+            Vector2 safe = heroPos + delta.normalized * (MinDistFromHero + 0.05f);
+            Vector3 at = orb.transform.position;
+            orb.transform.position = new Vector3(safe.x, safe.y, at.z);
+            OrbRadiance.Instance.Log("[orbspawn] P4 原版光球出生安全距离校正 dist=" + dist.ToString("F2") + " -> " +
+                Vector2.Distance(safe, heroPos).ToString("F2"));
+        }
+
+        private void RegisterOrb(OrbGroup group, PlayMakerFSM orbControl)
+        {
+            if (group == null || orbControl == null || orbControl.Fsm == null) return;
+            OrbSpawnMarker marker = orbControl.GetComponent<OrbSpawnMarker>();
+            if (marker == null) marker = orbControl.gameObject.AddComponent<OrbSpawnMarker>();
+            int serial = ++spawnSerial;
+            marker.Serial = serial;
+            if (!group.HasFirst)
+            {
+                group.HasFirst = true;
+                group.FirstSpawnTime = Time.time;
+                group.Deadline = Time.time + OrbRadiance.ChaseHeroWait + OrbRadiance.EffectiveOrbDissipateWait;
+                OrbRadiance.Instance.Log("[orb-sync] " + group.Name + " FIRST_FIRE t=" + Time.time.ToString("F3") +
+                    " dissipateAt=" + group.Deadline.ToString("F3"));
+            }
+            group.Members.Add(new OrbEntry { Control = orbControl, Marker = marker, Serial = serial });
+        }
+
+        private void ExpireGroups()
+        {
+            for (int i = groups.Count - 1; i >= 0; i--)
+            {
+                OrbGroup group = groups[i];
+                if (!group.HasFirst || Time.time < group.Deadline) continue;
+                int started = 0;
+                int alreadyGone = 0;
+                foreach (OrbEntry entry in group.Members)
+                {
+                    if (entry.Control == null || entry.Control.Fsm == null || entry.Marker == null ||
+                        entry.Marker.Serial != entry.Serial || !entry.Control.gameObject.activeInHierarchy)
+                    {
+                        alreadyGone++;
+                        continue;
+                    }
+                    string state = entry.Control.Fsm.ActiveStateName;
+                    // 两个追踪状态都有 DISSIPATE 事件，避免给已进入消散阶段的球重复发送。
+                    if (state == "Chase Hero" || state == "Chase Hero 2")
+                    {
+                        entry.Control.SendEvent("DISSIPATE");
+                        started++;
+                    }
+                    else alreadyGone++;
+                }
+                OrbRadiance.Instance.Log("[orb-sync] " + group.Name + " GROUP_DISSIPATE t=" +
+                    Time.time.ToString("F3") + " firstElapsed=" + (Time.time - group.FirstSpawnTime).ToString("F3") +
+                    " members=" + group.Members.Count + " sent=" + started + " skipped=" + alreadyGone);
+                // 如果玩家反复贴近蓄力点，尚未放出的球不能在统一截止时间后继续补发。
+                if (currentAttackGroup == group && remaining > 0)
+                {
+                    remaining = 0;
+                    charging = false;
+                    SetChargeFx(pendingPos, false);
+                    OrbRadiance.Instance.LogWarn("[orb-sync] 本轮同步消散截止，取消未完成的剩余出球");
+                }
+                groups.RemoveAt(i);
+                if (currentAttackGroup == group) currentAttackGroup = null;
+                if (currentFinalGroup == group) currentFinalGroup = null;
+            }
+        }
+
+        private void OnDisable()
+        {
+            groups.Clear();
+            currentAttackGroup = null;
+            currentFinalGroup = null;
+            remaining = 0;
+            charging = false;
         }
 
         // ---- 改 Attack Choices 的 Orbs 发的事件名（只原位改字段值）----
@@ -501,5 +725,37 @@ namespace OrbRadiance
         // 关开关时写回（和 OrbRadiance.OriginalWait 同一套思路：记一次改前的值，不硬编）
         internal static readonly System.Collections.Generic.Dictionary<SendEventByName, string> OriginalSendEvent =
             new System.Collections.Generic.Dictionary<SendEventByName, string>();
+    }
+
+    // 使用对象池时需区分同一个 GameObject 的不同“出生”，防止旧批次误消散新球。
+    internal sealed class OrbSpawnMarker : MonoBehaviour
+    {
+        internal int Serial;
+        private void OnDisable() { Serial = 0; }
+    }
+
+    // P4 原版 Spawn Fireball 沿用其自身 FSM，首帧补查安全距离，不改变追踪逻辑。
+    internal sealed class OrbP4SpawnSafety : MonoBehaviour
+    {
+        private PlayMakerFSM orbControl;
+        private bool pending;
+
+        internal void Arm(PlayMakerFSM fsm)
+        {
+            orbControl = fsm;
+            pending = true;
+        }
+
+        private void LateUpdate()
+        {
+            if (!pending || orbControl == null || orbControl.Fsm == null) return;
+            string state = orbControl.Fsm.ActiveStateName;
+            if (state != "Chase Hero" && state != "Chase Hero 2") return;
+            pending = false;
+            OrbSpawner.EnsureHeroSpawnDistance(gameObject);
+            OrbSpawner.EnrollNativeFinalOrb(orbControl);
+        }
+
+        private void OnDisable() { pending = false; }
     }
 }
