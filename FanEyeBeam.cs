@@ -643,6 +643,7 @@ namespace OrbRadiance
             AudioPlaySimple prep = eb1.Actions.OfType<AudioPlaySimple>().FirstOrDefault();
             if (prep != null && prep.oneShotClip != null) prepareClip = prep.oneShotClip.Value as AudioClip;
             AudioPlayerOneShotSingle shot = eb1.Actions.OfType<AudioPlayerOneShotSingle>().FirstOrDefault();
+            CombatAudioMixerRoute.UseNativeSfxGroup(audio, shot, "FanEyeBeam");
             if (shot != null && shot.audioClip != null) burstClip = shot.audioClip.Value as AudioClip;
         }
 

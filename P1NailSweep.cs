@@ -629,7 +629,11 @@ namespace OrbRadiance
                 FsmState antic = f.Fsm.GetState("Antic");
                 if (antic == null) continue;
                 AudioPlayerOneShotSingle snd = antic.Actions.OfType<AudioPlayerOneShotSingle>().FirstOrDefault();
-                if (snd != null && snd.audioClip != null) return snd.audioClip.Value as AudioClip;
+                if (snd != null && snd.audioClip != null)
+                {
+                    CombatAudioMixerRoute.UseNativeSfxGroup(audio, snd, "P1NailSweep");
+                    return snd.audioClip.Value as AudioClip;
+                }
             }
             return null;
         }
